@@ -30,16 +30,16 @@ O sistema terá apenas dois tipos de usuarios, admnistradores e leitores, admnis
 ## Paginas:
 
 
-## Paginas.list-fonts:
+## Paginas.reader.list-fonts:
 url:
-    /user/list-fonts/
+    /reader/list-fonts/
 definição:
  pagina onde o leitor pode ver as fontes de leitura que foram cadastrados para ele.
 
 
-## Paginas.config
+## Paginas.reader.config
 url:
-    /user/config 
+    /reader/config 
 definição:
 pagina onde o usuario pode configurar o json de props dele.
 
@@ -49,45 +49,52 @@ url:
 definição:
 pagina de login do admin, que exigirá um usuário e uma senha.
 
-## Paginas.list-fonts:
+## Paginas.admin.config:
+url:
+    /admin/config 
+definião:
+pagina onde o admnistrador pode configurar o json de props geral de todo sistema.
+
+
+## Paginas.admin.list-fonts:
 url:
  /admin/list-fonts?(query params de filtragem)
 definição: 
     página de listagem de fontes do sistema, dentro dessa página de listagem , os admnistradores devem poder listar as fontes ja cdastradas, baseado em vários critérios de busca, como criação, quantidade de leitores, etc ..
 
-## Paginas.edit-font
+## Paginas.admin.edit-font
 url:
      /admin/edit-font?fonteid=iu2i323202
 definição: 
 página onde o admnistrador pode editar a fonte, seja o bucket,pasta, alias ou as props.json especificas da fonte.
 
 
-## Paginas.list-readers
+## Paginas.admin.list-readers
 url:
     /admin/list-readers?&font=science-module-1&(other filtrage params here)
 definilçao:
 página onde o admnistrador pode listar todos os usuários do sistema, permitindo filtrar por fontes, criação, etc ..
 
-## Paginas.edit-reader?7user-id=2312212
+## Paginas.admin.edit-reader?7user-id=2312212
 url:
     /admin/edit-reader/
 definição:
 pagina onde o admnistrador pode editar, os usuarios do sistema, seu nome, senha e também quais fontes ele pode ler.
 
-## paginas.list-admins/
+## paginas.admin.list-admins/
 url:
     /admin/list-admins
 definição:
 pagina onde o admnistrador pode listar os admnistradores do sistema baseado em fitlragem 
 
 
-## paginas.edit-admin
+## paginas.admin.edit-admin
 url:
     /admin/edit-admin
 definição:
     pagina onde um admnistrador pode editar os outro admnnistradores
 
-## paginas.setup
+## paginas.root.setup
 url:
     /root/setup
 definição:
