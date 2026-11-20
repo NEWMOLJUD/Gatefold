@@ -20,11 +20,6 @@
     }
   },
   "main": "engine/worker/index.ts",
-  "assets": {
-    "directory": "sandbox/public",
-    "binding": "ASSETS",
-    "not_found_handling": "404-page"
-  },
   "triggers": {
     "crons": []
   },
