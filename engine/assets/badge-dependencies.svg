@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="178" height="24" viewBox="0 0 178 24" role="img" aria-label="runtime dependencies: 0">
+  <title>runtime dependencies: 0</title>
+  <rect x="0.5" y="0.5" width="177" height="23" rx="6" fill="#161b22" stroke="#3d444d"/>
+  <path d="M148 1v22" stroke="#3d444d"/>
+  <text x="74" y="16" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9198a1">runtime dependencies</text>
+  <text x="163" y="16" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f0f6fc">0</text>
+</svg>

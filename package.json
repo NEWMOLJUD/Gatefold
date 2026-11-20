@@ -1,0 +1,42 @@
+{
+  "name": "redoma",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A TypeScript web server for Cloudflare Workers and Linux, built to be driven by AI coding agents.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "rename": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/rename.ts",
+    "dev": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/dev.ts",
+    "test": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/test.ts",
+    "deploy": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/deploy.ts",
+    "deploy:check": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/deploy-check.ts",
+    "secret": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/secret.ts",
+    "restrict": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/restrict.ts",
+    "update": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/update.ts",
+    "service:install": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/service-install.ts",
+    "service:remove": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/service-remove.ts",
+    "service:status": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/service-status.ts",
+    "watcher:install": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/watcher-install.ts",
+    "watcher:remove": "node -e \"eval(require('./package.json').redoma.preflight)\" && node scripts/watcher-remove.ts",
+    "postinstall": "node -e \"eval(require('./package.json').redoma.preflight)\" && node engine/build.ts install"
+  },
+  "redoma": {
+    "template": "https://github.com/MateusMoutinhoOrg/Redoma.git",
+    "restrict": false,
+    "preflight": "var v=process.versions.node.split('.');if(v[0]<22||(v[0]==22&&v[1]<18)){console.error('\\nThis project needs Node.js 22.18 or newer. You have '+process.version+'.\\nInstall the current LTS version from https://nodejs.org, then run this command again.\\n');process.exit(1)}"
+  },
+  "allowScripts": {
+    "esbuild": false,
+    "workerd": false
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261113.1",
+    "@types/node": "26.6.6",
+    "typescript": "7.0.2",
+    "wrangler": "4.162.0"
+  }
+}

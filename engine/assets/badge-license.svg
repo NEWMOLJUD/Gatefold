@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="102" height="24" viewBox="0 0 102 24" role="img" aria-label="license: MIT">
+  <title>license: MIT</title>
+  <rect x="0.5" y="0.5" width="101" height="23" rx="6" fill="#161b22" stroke="#3d444d"/>
+  <path d="M58 1v22" stroke="#3d444d"/>
+  <text x="29" y="16" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#9198a1">license</text>
+  <text x="80" y="16" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#f0f6fc">MIT</text>
+</svg>

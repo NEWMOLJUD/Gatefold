@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redoma Links</title>
+<meta name="description" content="An experimental link shortener built with Redoma: a test project for horizontal, scalable architectures, where links are spread over many small databases.">
+
+<style>
+  :root {
+    color-scheme: light dark;
+    --page: #f6f8fa;
+    --card: #ffffff;
+    --ink: #1f2328;
+    --muted: #59636e;
+    --line: #d1d9e0;
+    --accent: #0e7490;
+    --accent-soft: #0e749022;
+    --on-accent: #ffffff;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d1117;
+      --card: #151b23;
+      --ink: #f0f6fc;
+      --muted: #9198a1;
+      --line: #3d444d;
+      --accent: #56d4dd;
+      --accent-soft: #56d4dd26;
+      --on-accent: #0d1117;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0 1rem;
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    background: radial-gradient(60rem 26rem at 50% -8rem, var(--accent-soft), transparent 70%) no-repeat var(--page);
+  }
+  header, main, footer { max-width: 46rem; margin: 0 auto; }
+  a { color: var(--accent); text-underline-offset: 0.2em; }
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Top bar */
+  header { display: flex; align-items: center; gap: 0.75rem; padding: 1.25rem 0; }
+  .brand { display: flex; align-items: center; gap: 0.5rem; color: var(--ink); text-decoration: none; font-size: 1.25rem; font-weight: 650; letter-spacing: -0.03em; }
+  .brand svg { width: 1.6rem; height: 1.7rem; }
+  .badge { padding: 0.1rem 0.6rem; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  header .source { margin-left: auto; font-size: 0.95rem; }
+
+  /* Headline and form */
+  .eyebrow { margin: 3.5rem 0 0.9rem; color: var(--accent); font-size: 0.8rem; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; }
+  h1 { margin: 0 0 1rem; font-size: clamp(2.1rem, 7vw, 3.4rem); line-height: 1.08; font-weight: 650; letter-spacing: -0.04em; text-wrap: balance; }
+  h1 em { font-style: normal; color: var(--accent); }
+  .lead { max-width: 36rem; margin: 0 0 2rem; color: var(--muted); font-size: 1.1rem; text-wrap: pretty; }
+
+  /* The live numbers, all sent by the server */
+  #stats { display: grid; gap: 0.75rem; margin: 2.5rem 0 0; }
+  @media (min-width: 44rem) { #stats { grid-template-columns: repeat(3, 1fr); } }
+  #stats div { padding: 1rem 1.1rem; border: 1px solid var(--line); border-radius: 0.9rem; background: var(--card); }
+  #stats dt { color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+  #stats dd { margin: 0; color: var(--muted); font-size: 0.85rem; }
+  #stats dd.number { margin: 0.4rem 0 0.2rem; color: var(--accent); font: 650 1.5rem/1.15 var(--mono); letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
+
+  form { display: flex; gap: 0.5rem; padding: 0.4rem; border: 1px solid var(--line); border-radius: 0.9rem; background: var(--card); box-shadow: 0 1px 2px #0000000d, 0 8px 24px #0000000d; }
+  form:focus-within { border-color: var(--accent); }
+  input { flex: 1; min-width: 0; padding: 0.7rem 0.8rem; border: 0; outline: 0; background: none; color: inherit; font: inherit; }
+  button { padding: 0.7rem 1.2rem; border: 0; border-radius: 0.6rem; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  button.quiet { padding: 0.3rem 0.8rem; border: 1px solid var(--line); background: none; color: var(--ink); font-size: 0.9rem; font-weight: 500; }
+  #error { min-height: 1.5rem; margin: 0.6rem 0.4rem 0; color: #cf222e; font-size: 0.95rem; }
+  @media (prefers-color-scheme: dark) { #error { color: #ff7b72; } }
+
+  /* The newest link */
+  #newest { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 1rem; margin-top: 0.5rem; padding: 1.1rem 1.25rem; border: 1px solid var(--accent); border-radius: 0.9rem; background: var(--accent-soft); }
+  #newest .short { flex: 1; font-size: clamp(1.1rem, 4.5vw, 1.5rem); }
+  #newest p { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .short { font-family: var(--mono); font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+  .short b { color: var(--accent); }
+  .short span { white-space: nowrap; } /* a long address may wrap, but never in the middle of the code */
+
+  /* Earlier links */
+  #earlier { margin: 1rem 0 0; padding: 0; list-style: none; }
+  #earlier li { display: flex; align-items: center; gap: 1rem; padding: 0.6rem 0.4rem; border-bottom: 1px solid var(--line); }
+  #earlier .target { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 0.9rem; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 34rem) {
+    #earlier li { flex-wrap: wrap; gap: 0.2rem 1rem; }
+    #earlier .short { flex: 1; }
+    #earlier .target { order: 1; flex-basis: 100%; }
+  }
+
+  /* How it works, next to the parts of a code */
+  .how { display: grid; gap: 2.5rem; align-items: start; margin-top: 5rem; }
+  @media (min-width: 44rem) { .how { grid-template-columns: 1fr 1fr; } }
+  h2 { margin: 0 0 1.25rem; font-size: 1.4rem; font-weight: 650; letter-spacing: -0.02em; }
+  ol { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  ol li { position: relative; margin-bottom: 1.25rem; padding-left: 2.6rem; color: var(--muted); counter-increment: step; }
+  ol li::before { content: counter(step); position: absolute; left: 0; top: 0.1rem; width: 1.7rem; height: 1.7rem; border: 1px solid var(--line); border-radius: 50%; color: var(--accent); font: 600 0.85rem/1.6rem var(--mono); text-align: center; }
+  ol strong { display: block; color: var(--ink); }
+
+  #parts { display: flex; justify-content: center; gap: 0.5rem; padding: 1.75rem 0.75rem 1.4rem; border: 1px solid var(--line); border-radius: 0.9rem; background: var(--card); }
+  #parts span { display: grid; gap: 0.6rem; text-align: center; }
+  #parts b { padding: 0.5rem 0.55rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--page); font: 650 clamp(1.15rem, 5vw, 1.55rem)/1 var(--mono); }
+  #parts .database b { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  #parts small { color: var(--muted); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; }
+  figure { margin: 0; }
+  figcaption { margin-top: 0.75rem; color: var(--muted); font-size: 0.9rem; }
+
+  footer { margin-top: 5rem; padding: 1.5rem 0 3rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.9rem; }
+  footer p { max-width: 38rem; margin: 0 0 0.5rem; }
+  [hidden] { display: none !important; }
+</style>
+
+<header>
+  <a class="brand" href="https://github.com/MateusMoutinhoOrg/Redoma">
+    <svg viewBox="0 0 36 38" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6 34V18a12 12 0 0 1 24 0v16" stroke="var(--accent)" stroke-width="2.4" fill="var(--accent-soft)"/>
+      <circle cx="18" cy="3.6" r="2.4" stroke="var(--accent)" stroke-width="2.4"/>
+      <path d="M2 34.5h32" stroke="var(--ink)" stroke-width="2.8"/>
+      <rect x="13" y="20" width="10" height="10" rx="2" fill="var(--ink)"/>
+    </svg>
+    Redoma Links
+  </a>
+  <span class="badge">Experimental</span>
+  <a class="source" href="https://github.com/MateusMoutinhoOrg/Redoma">GitHub</a>
+</header>
+
+<main>
+  <p class="eyebrow">Experimental test project</p>
+  <h1>A link shortener that scales <em>horizontally</em>.</h1>
+  <p class="lead">
+    Redoma Links exists to test horizontal, scalable architectures: instead of one big database,
+    links are spread over many small ones. It is an experiment of
+    <a href="https://github.com/MateusMoutinhoOrg/Redoma">Redoma</a>, not a production service.
+    Paste a long address to try it.
+  </p>
+
+
+  <form>
+    <input name="url" aria-label="Long address" placeholder="https://example.com/a/very/long/address" autocomplete="off" required autofocus>
+    <button>Shorten</button>
+  </form>
+  <p id="error" role="alert"></p>
+
+  <section id="newest" aria-live="polite" hidden></section>
+  <ul id="earlier"></ul>
+
+  <dl id="stats">
+    <div>
+      <dt>Redirects served</dt>
+      <dd class="number" id="redirects">…</dd>
+      <dd>short links opened so far</dd>
+    </div>
+    <div>
+      <dt>Databases in use</dt>
+      <dd class="number" id="databases">…</dd>
+      <dd id="possible-databases">of billions possible</dd>
+    </div>
+    <div>
+      <dt>Possible links</dt>
+      <dd class="number" id="possible-links">…</dd>
+      <dd id="possible-links-exact">short addresses that can exist</dd>
+    </div>
+  </dl>
+
+  <div class="how">
+    <section>
+      <h2>How it works</h2>
+      <ol>
+        <li><strong>A code is drawn</strong> Seven random letters and digits, then one check character: <code>k3x9ab7x</code>. There is no counter to wait for.</li>
+        <li><strong>Six characters pick the database</strong> <code>k3x9ab</code> means the link is kept in <code>links-k3x9ab</code>. A database is created the first time it is needed.</li>
+        <li><strong>One query opens the link</strong> A visit asks that one small database, however many others exist. A mistyped address fails the check and opens no database at all.</li>
+        <li><strong>One database keeps the totals</strong> Redirects and databases in use are counted in <code>redirect-count</code>. It is the only thing all visits share, so a link still opens if a count cannot be saved.</li>
+      </ol>
+    </section>
+    <figure>
+      <div id="parts" aria-hidden="true">
+        <span class="database"><b id="part-database">k3x9ab</b><small>Database</small></span>
+        <span><b id="part-link">7</b><small>Link</small></span>
+        <span><b id="part-check">x</b><small>Check</small></span>
+      </div>
+      <figcaption id="caption">The parts of a code. The first names the database, the second tells apart the links inside it, and the last is computed from the others.</figcaption>
+    </figure>
+  </div>
+</main>
+
+<footer>
+  <p>
+    Redoma Links is the example app of <a href="https://github.com/MateusMoutinhoOrg/Redoma">Redoma</a>.
+    The whole server is <a href="https://github.com/MateusMoutinhoOrg/Redoma/blob/HEAD/sandbox/main.ts">one short file</a>.
+  </p>
+  <p>It is an experiment: links may stop working at any time, and anyone who has a short link can open it. Do not shorten anything private.</p>
+</footer>
+
+<script>
+  const form = document.querySelector("form");
+  const error = document.querySelector("#error");
+
+  // The links made in this browser, newest first. They are remembered here,
+  // not on the server: the server keeps no list of who made what.
+  let links = [];
+  try { links = JSON.parse(localStorage.getItem("links")) ?? []; } catch {}
+
+  /**
+   * The database that keeps a link. The server says which when it makes one;
+   * this page never works it out. Links remembered from before the server
+   * said so were kept by the first two characters of their code.
+   */
+  function databaseOf(link) {
+    return link.database ?? `links-${link.code.slice(0, 2)}`;
+  }
+
+  /** The part of a link's code that names its database. */
+  function databasePart(link) {
+    return databaseOf(link).slice("links-".length);
+  }
+
+  /** Builds an element: el("a", { href: "/" }, "text or elements") */
+  function el(tag, properties, ...children) {
+    const element = Object.assign(document.createElement(tag), properties);
+    element.append(...children);
+    return element;
+  }
+
+  /** The short link, with the characters that pick the database highlighted. */
+  function shortLink(link) {
+    const part = databasePart(link);
+    const code = el("span", {}, el("b", {}, part), link.code.slice(part.length));
+    return el("a", { className: "short", href: `/${link.code}`, target: "_blank" }, `${location.host}/`, code);
+  }
+
+  function copyButton(code) {
+    const button = el("button", { className: "quiet", type: "button" }, "Copy");
+    button.onclick = async () => {
+      await navigator.clipboard.writeText(`${location.origin}/${code}`);
+      button.textContent = "Copied";
+      setTimeout(() => (button.textContent = "Copy"), 1500);
+    };
+    return button;
+  }
+
+  function show() {
+    const [newest, ...earlier] = links;
+
+    const card = document.querySelector("#newest");
+    card.hidden = !newest;
+    if (newest) {
+      const database = el("code", {}, databaseOf(newest));
+      card.replaceChildren(shortLink(newest), copyButton(newest.code), el("p", {}, "Kept in database ", database, "."));
+    }
+
+    document.querySelector("#earlier").replaceChildren(
+      ...earlier.map((link) => el("li", {}, shortLink(link), el("span", { className: "target" }, link.url), copyButton(link.code))),
+    );
+
+    // The drawing of a code's parts shows the newest link, once there is one.
+    if (newest?.database) {
+      const part = databasePart(newest);
+      document.querySelector("#part-database").textContent = part;
+      document.querySelector("#part-link").textContent = newest.code.slice(part.length, -1);
+      document.querySelector("#part-check").textContent = newest.code.slice(-1);
+      document.querySelector("#caption").textContent =
+        "The parts of your newest link. The first names the database, the second tells apart the links inside it, and the last is computed from the others.";
+    }
+  }
+
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    let url = form.url.value.trim();
+    if (!url.includes("://")) url = `https://${url}`; // "example.com" is fine too
+
+    form.querySelector("button").disabled = true;
+    const response = await fetch("/api/links", { method: "POST", body: JSON.stringify({ url }) });
+    const result = await response.json();
+    form.querySelector("button").disabled = false;
+
+    error.textContent = response.ok ? "" : result.error;
+    if (!response.ok) return;
+
+    links = [{ code: result.code, url: result.url, database: result.database }, ...links].slice(0, 8);
+    try { localStorage.setItem("links", JSON.stringify(links)); } catch {}
+    form.reset();
+    show();
+    showStats(); // the new link may have put one more database in use
+  };
+
+  const exact = new Intl.NumberFormat("en-US"); // 78,364,164,096
+  const rounded = new Intl.NumberFormat("en-US", { notation: "compact", compactDisplay: "long", maximumFractionDigits: 1 }); // 78.4 billion
+
+  /** Shows the numbers the server counts and the limits it sets. Without an answer, they are hidden. */
+  async function showStats() {
+    const stats = document.querySelector("#stats");
+    try {
+      const response = await fetch("/api/stats");
+      if (!response.ok) throw new Error(`The numbers answered ${response.status}`);
+      const { redirects, databases, possibleDatabases, possibleLinks } = await response.json();
+      document.querySelector("#redirects").textContent = exact.format(redirects);
+      document.querySelector("#databases").textContent = exact.format(databases);
+      document.querySelector("#possible-databases").textContent = `of ${exact.format(possibleDatabases)} possible`;
+      document.querySelector("#possible-links").textContent = rounded.format(possibleLinks);
+      document.querySelector("#possible-links-exact").textContent = `${exact.format(possibleLinks)} addresses`;
+      stats.hidden = false;
+    } catch {
+      stats.hidden = true;
+    }
+  }
+
+  // Short links open in a new tab: count again when the visitor comes back to this one.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) showStats();
+  });
+
+  show();
+  showStats();
+</script>

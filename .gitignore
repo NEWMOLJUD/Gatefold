@@ -1,0 +1,14 @@
+# Dependencies and caches
+node_modules
+.wrangler/
+
+# Your data and your secrets: never commit these
+.data/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+# Local-only agent settings and logs
+.claude/settings.local.json
+*.log

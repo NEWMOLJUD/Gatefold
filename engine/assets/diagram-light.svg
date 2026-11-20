@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="396" viewBox="0 0 760 396" role="img" aria-label="The app in sandbox/ sits under a bell jar. The six capabilities declared in deps/ are the only way through the glass. engine/ implements them on Cloudflare Workers and on Linux.">
+  <title>How sandbox/, deps/ and engine/ relate</title>
+  <!-- the jar -->
+  <path d="M60 250V132a110 110 0 0 1 110-110h420a110 110 0 0 1 110 110v118" fill="#0e7490" fill-opacity="0.06" stroke="#0e7490" stroke-width="2"/>
+  <circle cx="380" cy="12" r="6" fill="none" stroke="#0e7490" stroke-width="2"/>
+  <!-- sandbox -->
+  <text x="380" y="66" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" font-weight="600" fill="#1f2328">sandbox/</text>
+  <text x="380" y="90" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#59636e">your app: routes, jobs, tests and the static frontend</text>
+  <text x="380" y="112" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#59636e">the only place an agent writes</text>
+  <!-- deps: the ports through the glass -->
+  <text x="84" y="140" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" font-weight="600" fill="#0e7490">deps/</text>
+  <text x="130" y="140" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" fill="#59636e">the contract: six capabilities, the only way through the glass</text>
+    <g>
+      <rect x="84" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="130" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">server</text>
+    </g>
+    <g>
+      <rect x="184" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="230" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">http</text>
+    </g>
+    <g>
+      <rect x="284" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="330" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">databases</text>
+    </g>
+    <g>
+      <rect x="384" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="430" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">files</text>
+    </g>
+    <g>
+      <rect x="484" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="530" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">secrets</text>
+    </g>
+    <g>
+      <rect x="584" y="150" width="92" height="30" rx="15" fill="#ffffff" stroke="#0e7490" stroke-width="1.5"/>
+      <text x="630" y="170" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13" fill="#1f2328">cron</text>
+    </g>
+  <g stroke="#0e7490" stroke-width="1.5" stroke-dasharray="3 4"><path d="M130 180v62"/><path d="M230 180v62"/><path d="M330 180v62"/><path d="M430 180v62"/><path d="M530 180v62"/><path d="M630 180v62"/></g>
+  <!-- the base: engine -->
+  <rect x="28" y="244" width="704" height="64" rx="10" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1.5"/>
+  <text x="52" y="272" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" font-weight="600" fill="#1f2328">engine/</text>
+  <text x="52" y="294" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#59636e">implements deps/ and runs the app. Nobody needs to read it.</text>
+  <!-- platforms -->
+  <g stroke="#d1d9e0" stroke-width="1.5"><path d="M214 308v26"/><path d="M546 308v26"/></g>
+  <rect x="64" y="334" width="300" height="48" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1.5"/>
+  <text x="214" y="356" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1f2328">Cloudflare Workers</text>
+  <text x="214" y="373" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e">Durable Objects (SQLite) · R2 · Cron Triggers</text>
+  <rect x="396" y="334" width="300" height="48" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1.5"/>
+  <text x="546" y="356" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1f2328">Linux, self-hosted</text>
+  <text x="546" y="373" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e">same runtime (workerd) · systemd · local disk</text>
+</svg>
