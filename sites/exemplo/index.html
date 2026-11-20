@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ props.titulo | default: "Exemplo do Canone" }}</title>
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <main>
+    <img src="img/logo.svg" alt="" width="64" height="64">
+    <h1>{{ props.titulo | default: "Exemplo do Canone" }}</h1>
+    <p>Esta página é o arquivo <code>sites/exemplo/index.html</code> do repositório. Ela é entregue em
+      <code>/reader/view/exemplo/</code> depois que um administrador cadastra a fonte <code>exemplo</code>.</p>
+
+    <h2>Props</h2>
+    <p>O que está entre chaves duplas é trocado no servidor pelos props (plataforma &lt; fonte &lt; leitor).</p>
+    {% if props.tema == "escuro" %}
+      <p>Você escolheu o tema <strong>escuro</strong> nos seus props.</p>
+    {% else %}
+      <p>Defina <code>{"tema": "escuro"}</code> nos props para ver esta frase mudar.</p>
+    {% endif %}
+
+    {% for item in props.avisos %}
+      <p class="aviso">{{ forloop.index }}. {{ item }}</p>
+    {% else %}
+      <p>Nenhum aviso: coloque uma lista em <code>avisos</code> nos props.</p>
+    {% endfor %}
+
+    <h2>Requisição</h2>
+    <p>Página pedida na query (<code>?page=</code>): {{ query.page | default: "nenhuma" }}</p>
+    <p>Idioma do navegador: {{ headers.accept-language | default: "não informado" }}</p>
+
+    <h2>Trecho cru</h2>
+    <p>{% raw %}Dentro de um bloco raw, {{ isto }} e {% isto %} aparecem como foram escritos.{% endraw %}</p>
+
+    <p><a href="sobre/">Outra página desta fonte</a></p>
+  </main>
+</body>
+</html>

@@ -7,6 +7,8 @@ export interface Env {
   FILES?: R2Bucket;
   /** Present when `sandbox/public/` exists. */
   ASSETS?: Fetcher;
+  /** Present when `sites/` exists: the folder, reachable only through `deps.sites`. */
+  SITES?: Fetcher;
   /** Worker name, for messages that point at the dashboard. */
   REDOMA_NAME?: string;
   /** "dev" under `npm run dev` and tests: error messages are sent to the client. */

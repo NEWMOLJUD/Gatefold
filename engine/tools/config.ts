@@ -7,9 +7,9 @@
 //   takes none of the account's Cron Triggers.
 // - a local config, written to .wrangler/redoma/ on every start, runs the same
 //   Worker under the local runtime with every capability switched on.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PUBLIC, ROOT, STATE, WRANGLER_CONFIG } from "./cli.ts";
+import { PUBLIC, ROOT, SITES, STATE, WRANGLER_CONFIG } from "./cli.ts";
 
 /** Bump together with the pinned Wrangler version when the template is updated. */
 export const COMPATIBILITY_DATE = "2026-11-01";
@@ -41,7 +41,7 @@ export function deployConfig(name: string, features: Features): string {
     $schema: "node_modules/wrangler/config-schema.json",
     ...shared(name),
     main: "engine/worker/index.ts",
-    ...(existsSync(PUBLIC) ? { assets: { directory: "sandbox/public", binding: "ASSETS", not_found_handling: "404-page" } } : {}),
+    ...assets("sites", "sandbox/public"),
     ...(features.files ? { r2_buckets: [{ binding: "FILES", bucket_name: bucketName(name) }] } : {}),
     // An empty list removes the trigger; leaving the key out would keep an old one alive.
     triggers: { crons: features.cron ? ["* * * * *"] : [] },
@@ -54,6 +54,44 @@ export function deployConfig(name: string, features: Features): string {
     build: { command: "node engine/build.ts" },
   };
   return `${HEADER}${JSON.stringify(config, null, 2)}\n`;
+}
+
+/**
+ * A Worker has one folder of static files. `sites/` takes it when it exists,
+ * and the Worker runs first on every request, so no file of it is ever served
+ * without going through the app (deps.sites). Otherwise `sandbox/public/` is
+ * served as it is.
+ */
+function assets(sitesDirectory: string, publicDirectory: string): Record<string, unknown> {
+  if (existsSync(SITES)) {
+    return { assets: { directory: sitesDirectory, binding: "SITES", run_worker_first: true, html_handling: "none", not_found_handling: "none" } };
+  }
+  if (existsSync(PUBLIC)) return { assets: { directory: publicDirectory, binding: "ASSETS", not_found_handling: "404-page" } };
+  return {};
+}
+
+/** Direct subfolders of `sites/`, sorted. Hidden folders are left out. */
+export function siteFolders(): string[] {
+  if (!existsSync(SITES)) return [];
+  return readdirSync(SITES, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+/** Generated module the Worker imports to answer `deps.sites.folders()`. */
+export const SITES_MANIFEST = join(STATE, "sites.ts");
+
+/**
+ * The Worker cannot list a folder at run time, so the list is written before
+ * every build: by the checks (deploys, Cloudflare's builders, tests, dev) and
+ * by every local start.
+ */
+export function writeSitesManifest(): void {
+  const wanted = `// Generated from the subfolders of sites/. Do not edit.\nexport default ${JSON.stringify(siteFolders())} as string[];\n`;
+  if (existsSync(SITES_MANIFEST) && readFileSync(SITES_MANIFEST, "utf8") === wanted) return;
+  mkdirSync(STATE, { recursive: true });
+  writeFileSync(SITES_MANIFEST, wanted);
 }
 
 export function bucketName(name: string): string {
@@ -109,10 +147,11 @@ export function writeLocalConfig(options: LocalOptions): string {
   const config = {
     ...shared(options.name),
     main: join(ROOT, "engine", "worker", "index.ts"),
-    ...(existsSync(PUBLIC) ? { assets: { directory: PUBLIC, binding: "ASSETS", not_found_handling: "404-page" } } : {}),
+    ...assets(SITES, PUBLIC),
     r2_buckets: [{ binding: "FILES", bucket_name: bucketName(options.name) }],
     vars: { REDOMA_NAME: options.name, ...options.vars },
   };
+  writeSitesManifest();
   // One folder per run: Wrangler reads `.dev.vars` (the secrets) from next to its config.
   const folder = join(STATE, options.id);
   mkdirSync(folder, { recursive: true });

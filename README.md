@@ -40,7 +40,59 @@ A TypeScript template for Cloudflare Workers and Linux, built to be driven by AI
 <!-- /redoma:header -->
 
 <!-- redoma:project -->
-<!-- This block is yours: describe your project and link its docs here. `npm run update` replaces the rest of this file and keeps what is between these two markers. -->
+## Canone
+
+Canone publica e gerencia sites **somente leitura**. Cada subpasta de `sites/` é uma fonte; o sistema decide quem pode ler cada uma e renderiza os arquivos no servidor com props configuráveis. A especificação completa está em [`seed.md`](seed.md).
+
+### Começar uma instalação
+
+1. No GitHub, clique em **Use this template** e crie o seu repositório. **Escolha "Private"**: quem lê o repositório lê todas as fontes, inclusive as privadas.
+2. Coloque os seus sites em `sites/`, uma subpasta por site (nome com letras minúsculas, números e hífen). A pasta `sites/exemplo/` é só um ponto de partida.
+3. Defina os três segredos abaixo e publique.
+4. Abra `/root/setup`, informe a senha root e crie o primeiro administrador. Depois entre em `/admin/` e cadastre as fontes e os leitores.
+
+### Segredos
+
+| Nome | Uso |
+|---|---|
+| `CANONE_ROOT_PASSWORD` | Senha root: libera `/root/setup`. |
+| `CANONE_MASTER_KEY` | Chave mestra: entra no resumo das senhas e das chaves de API. Guarde uma cópia: se ela mudar, todas as senhas e chaves deixam de valer. |
+| `CANONE_SIGNING_KEY` | Assina os tokens de login. Trocá-la encerra todas as sessões. |
+
+Use valores longos e aleatórios, diferentes entre si. Na sua máquina: `npm run secret set NOME`. Publicando pelo Git conectado à Cloudflare, cadastre os três também no painel: Workers & Pages → o Worker → Settings → Variables and Secrets → Add, tipo "Secret".
+
+### Endereços
+
+| Endereço | O que é |
+|---|---|
+| `/root/setup` | Cria e remove administradores com a senha root. |
+| `/admin/` | Login e painel do administrador. |
+| `/reader/` | Login e início do leitor. |
+| `/reader/view/<alias>/<arquivo>` | Entrega `sites/<alias>/<arquivo>`. |
+| `/api/admin/*`, `/api/reader/*` | Tudo o que as páginas fazem, em JSON (`sandbox/api.ts` lista as rotas). Chave no cabeçalho `Authorization: Bearer <chave>`. |
+
+### Templates
+
+Os arquivos cujas extensões estão na lista `render` da fonte (padrão: `html`) passam pela engine:
+
+```html
+<h1>{{ props.site }}</h1>
+{% if props.age >= 18 %}…{% elsif query.page == 2 %}…{% else %}…{% endif %}
+{% for item in props.itens %}{{ forloop.index }}. {{ item }}{% else %}lista vazia{% endfor %}
+{% raw %}{{ isto não é interpretado }}{% endraw %}
+```
+
+Variáveis: `props` (plataforma < fonte < leitor), `query` e `headers` (sem `cookie` nem `authorization`). Tudo é escapado ao ser impresso; os filtros são `raw` (sem escape), `json`, `default: "valor"`, `upper`, `lower` e `size`.
+
+### Decisões tomadas para os itens em aberto do seed (seção 13)
+
+- **Leitura de `sites/`:** o motor ganhou a capacidade somente leitura `deps.sites` (`deps/sites.ts`). A pasta é publicada junto com o app e nunca é entregue direto. Limites da Cloudflare: 20.000 arquivos, 25 MB cada. `sites/` e `sandbox/public/` não podem coexistir.
+- **Sessão:** vale 7 dias. O leitor não troca a própria senha; o administrador troca.
+- **Senha root:** 5 tentativas erradas por hora, somando todos os visitantes.
+- **Endereço que termina em pasta:** entrega o `index.html` dela. Arquivo inexistente: 404.
+- **Tamanhos:** JSON de props até 64 mil caracteres; arquivos acima de 1 MB são entregues sem renderizar.
+- **Subpasta que sumiu:** o cadastro continua, aparece como "pasta ausente" nas telas do administrador e responde 404.
+- **Filtros das listagens:** começo do nome, intervalo de criação, fonte (leitores) e mínimo de leitores (fontes), 50 itens por página.
 <!-- /redoma:project -->
 
 ## Quickstart

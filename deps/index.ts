@@ -7,11 +7,13 @@
  *   http       call other servers              http.ts
  *   databases  SQLite, created on first use    databases.ts
  *   files      store uploads and other blobs   files.ts
+ *   sites      read the repository's sites/    sites.ts
  *   secrets    read API keys by name           secrets.ts
  *   cron       run a function on a schedule    cron.ts
  *
  * Tests: testing.ts. Globals you may use: globals.ts. Files in
- * `sandbox/public/` are served as they are.
+ * `sandbox/public/` are served as they are; files in `sites/` are not
+ * (sites.ts).
  * @example
  * export default function main({ server }: Deps) {
  *   server.route("GET", "/api/hello", () => Response.json({ hello: "world" }));
@@ -22,6 +24,7 @@ export interface Deps {
   http: import("./http.ts").Http;
   databases: import("./databases.ts").Databases;
   files: import("./files.ts").Files;
+  sites: import("./sites.ts").Sites;
   secrets: import("./secrets.ts").Secrets;
   cron: import("./cron.ts").Cron;
 }

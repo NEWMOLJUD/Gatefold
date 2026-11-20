@@ -10,6 +10,8 @@ export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const SANDBOX = join(ROOT, "sandbox");
 export const PUBLIC = join(SANDBOX, "public");
 export const DEPS = join(ROOT, "deps");
+/** The read-only folder behind `deps.sites`. Optional. */
+export const SITES = join(ROOT, "sites");
 /** Everything the app stores (databases and files). The thing to back up. */
 export const DATA = join(ROOT, ".data");
 /** Scratch space for generated configs and logs. Safe to delete. */

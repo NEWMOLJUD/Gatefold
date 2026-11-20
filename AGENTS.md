@@ -6,6 +6,8 @@ A TypeScript web server for Cloudflare Workers and Linux. The app lives in a san
 
 - `sandbox/` is the app: `main.ts` (entry point), any modules you add, `public/` (static frontend), `*.test.ts` (tests).
 - `deps/` is the contract: types and documentation for everything the app can use. No logic.
+- `sites/` holds the read-only sites the app serves through `deps.sites`: one subfolder per site. Content, not code.
+- `seed.md` is the specification of the app in `sandbox/` (Canone). Read it before changing behaviour.
 - `engine/` implements `deps/` and runs the app. `scripts/` holds the `npm run` commands.
 
 ## Reading order

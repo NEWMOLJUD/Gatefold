@@ -2,8 +2,9 @@
 // `npm run deploy`, `npm run dev`, the Wrangler build step and the Linux
 // watcher all call this, with different strictness.
 import { analyze } from "./analyze.ts";
-import { type Problem, rel, WRANGLER_CONFIG } from "./cli.ts";
-import { type Features, syncDeployConfig } from "./config.ts";
+import { existsSync } from "node:fs";
+import { type Problem, PUBLIC, rel, SITES, WRANGLER_CONFIG } from "./cli.ts";
+import { type Features, syncDeployConfig, writeSitesManifest } from "./config.ts";
 import { isRestricted, projectName } from "./project.ts";
 
 export interface CheckOptions {
@@ -28,8 +29,20 @@ export interface CheckResult {
 
 export async function check(options: CheckOptions): Promise<CheckResult> {
   const restricted = isRestricted();
+  // Before the analysis: the Worker imports this generated file.
+  writeSitesManifest();
   const { problems, uses } = await analyze({ types: options.types, tools: options.tools ?? false, restricted });
   const notes: string[] = [];
+  if (existsSync(SITES) && existsSync(PUBLIC)) {
+    problems.push({
+      file: "sites",
+      line: 0,
+      column: 0,
+      message:
+        "sites/ and sandbox/public/ cannot be used together: a Worker has one folder of static files, and sites/ must never be served directly. " +
+        "Remove sandbox/public/ and answer those pages from routes, or remove sites/.",
+    });
+  }
 
   if (options.config !== "ignore") {
     const sync = syncDeployConfig(projectName(), uses, options.config === "write");

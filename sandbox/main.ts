@@ -1,12 +1,22 @@
 import type { Deps } from "../deps/index.ts";
+import { registerApi } from "./api.ts";
+import { type Ctx, MIGRATIONS, cleanup } from "./core.ts";
+import { registerPages } from "./pages.ts";
 
-// Minimal Cloudflare Access login. Access sits in front of the app and adds
-// this header only to requests from people who have already logged in.
-// Without the header the request did not go through Access: refuse it.
-export default function main({ server }: Deps) {
-  server.route("*", "/*", (request) => {
-    const email = request.headers.get("Cf-Access-Authenticated-User-Email");
-    if (!email) return new Response("Não autenticado", { status: 401 });
-    return new Response(`Olá, ${email}`);
-  });
+// Canone: publica e gerencia sites somente leitura. A especificação é o seed.md.
+//
+//   core.ts      banco, autenticação e as operações de administradores e leitores
+//   view.ts      entrega dos arquivos de sites/ (permissão, props, renderização)
+//   template.ts  engine de templates
+//   pages.ts     páginas /admin, /reader e /root
+//   api.ts       rotas /api/admin, /api/reader e /api/root
+export default function main({ server, databases, sites, secrets, cron }: Deps) {
+  // Um único banco, de identificador "canone" (seed.md, seção 10).
+  const ctx: Ctx = { db: databases.open("canone", MIGRATIONS), sites, secrets };
+
+  registerApi(server, ctx);
+  registerPages(server, ctx);
+
+  // Limpeza de sessões vencidas e de contagens antigas da senha root, de hora em hora.
+  cron.schedule("17 * * * *", (time) => cleanup(ctx, time));
 }

@@ -7,6 +7,7 @@ import { openDatabase } from "./databases.ts";
 import { type Env, PublicError } from "./env.ts";
 import { createFiles } from "./files.ts";
 import { Router } from "./router.ts";
+import { createSites } from "./sites.ts";
 
 /** One running copy of the sandbox app. Tests get one each; production has one. */
 interface Instance {
@@ -75,6 +76,7 @@ export function createEngine(main: unknown) {
         open: (id, migrations) => openDatabase(env, prefix, id, migrations),
       },
       files: createFiles(env, prefix),
+      sites: createSites(env),
       secrets: {
         get(name: string): string {
           if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
