@@ -4,7 +4,9 @@
 
 Canone é um sistema web low code para publicar e gerenciar sites **somente leitura**.
 
-Os arquivos dos sites ficam em buckets de armazenamento. O Cloudflare R2 é o provedor principal, por não exigir credenciais; outros provedores (AWS S3, Google Cloud Storage e similares) também podem ser conectados, mediante suas credenciais. O sistema não hospeda conteúdo próprio: ele mapeia um **alias** de URL para um bucket e uma pasta (caminhos descentralizados), controla quem pode ler cada mapeamento e renderiza os arquivos no servidor usando um conjunto de propriedades (**props**) configuráveis.
+Os arquivos dos sites ficam em uma única pasta do próprio repositório, `sites/`. Cada subpasta direta dela é uma **fonte**, e o nome da subpasta é o **alias** usado na URL. Não há outro lugar de onde o sistema leia arquivos. O sistema controla quem pode ler cada fonte e renderiza os arquivos no servidor usando um conjunto de propriedades (**props**) configuráveis.
+
+Publicar ou alterar conteúdo é enviar os arquivos ao repositório e publicar o sistema de novo. Nada é editado pela tela.
 
 ### Princípios
 
@@ -16,9 +18,8 @@ Os arquivos dos sites ficam em buckets de armazenamento. O Cloudflare R2 é o pr
 
 | Termo | Significado |
 |---|---|
-| Fonte (*source*) | Mapeamento de um alias para um bucket e uma pasta inicial, em um provedor de armazenamento. |
-| Provedor (*provider*) | Serviço onde o bucket está: R2, AWS S3, Google Cloud Storage etc. |
-| Alias | Nome usado na URL no lugar do bucket e da pasta. |
+| Fonte (*source*) | Uma subpasta direta de `sites/`, com a configuração de quem pode lê-la. |
+| Alias | O nome dessa subpasta. É o que aparece na URL. |
 | Props | Objeto JSON de propriedades disponível para os templates. |
 | Leitor (*reader*) | Usuário que lê as fontes liberadas para ele. |
 | Administrador (*admin*) | Usuário com permissão total no sistema. |
@@ -59,41 +60,27 @@ Cada fonte tem os campos:
 
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `id` | texto | Identificador gerado pelo sistema. |
-| `provider` | texto | Provedor de armazenamento: `r2` (padrão), `s3`, `gcs` etc. |
-| `name` | texto | Nome do bucket. |
-| `path` | texto | Pasta inicial dentro do bucket. |
-| `alias` | texto | Nome que substitui bucket e pasta na URL. Único no sistema. |
+| `alias` | texto | Nome da subpasta em `sites/`. Identifica a fonte e é único no sistema. |
 | `public` | booleano | `true`: qualquer pessoa acessa, sem login. `false`: só leitores com permissão. |
 | `props` | objeto JSON | Props específicos da fonte. |
 | `render` | lista de texto | Extensões de arquivo que passam pela engine de templates. Padrão: `["html"]`. Lista vazia desliga a renderização na fonte. |
-| `connection` | objeto | Dados e credenciais exigidos pelo provedor. Vazio para `r2`. |
-
-### Provedores
-
-Toda fonte funciona do mesmo jeito para o leitor, qualquer que seja o provedor. O que muda é o que o administrador informa no cadastro:
-
-| Provedor | Dados de conexão | Credenciais |
-|---|---|---|
-| Cloudflare R2 (`r2`) | Nenhum além do nome do bucket. | Nenhuma: o bucket é ligado diretamente ao sistema. |
-| AWS S3 (`s3`) | Região. | Chave de acesso e chave secreta. |
-| Google Cloud Storage (`gcs`) | Projeto. | Chave de conta de serviço. |
-| Compatível com S3 (`s3-compatible`) | Endereço do serviço e região. | Chave de acesso e chave secreta. |
 
 Regras:
 
-- O sistema só precisa de permissão de **leitura** no bucket; as credenciais informadas devem ter apenas esse acesso.
-- Credenciais são guardadas cifradas com a chave mestra (seção 9) e nunca são exibidas de volta, nem nas páginas nem na API. Para trocar, informa-se uma nova.
-- Ao salvar uma fonte, o sistema testa a conexão e avisa se o bucket não puder ser lido.
-- Novos provedores devem poder ser acrescentados sem mudar o restante do sistema: cada um implementa a mesma operação de "ler um arquivo do bucket".
+- As fontes possíveis são as subpastas que existem em `sites/`. O banco guarda só a configuração de cada uma; os arquivos ficam na pasta.
+- Cadastrar uma fonte é escolher uma subpasta ainda não cadastrada. Uma subpasta sem cadastro se comporta como um alias inexistente: ninguém a lê.
+- Remover uma fonte apaga a configuração e as permissões dela. Os arquivos só saem quando a subpasta é removida do repositório.
+- O nome da subpasta usa apenas letras minúsculas, números e hífen. Subpastas com outro tipo de nome não podem ser cadastradas.
 
-### Resolução de caminho
+### Endereço dos arquivos
 
 ```
-/reader/view/<alias>/<arquivo>   →   bucket <name>, objeto <path>/<arquivo>
+/reader/view/<alias>/<arquivo>   →   sites/<alias>/<arquivo>
 ```
 
-Exemplo: com `alias = rotas-plataforma`, `name = sites` e `path = plataforma/v1`, a URL `/reader/view/rotas-plataforma/index.html` entrega o objeto `plataforma/v1/index.html` do bucket `sites`.
+Exemplo: a URL `/reader/view/rotas-plataforma/index.html` entrega o arquivo `sites/rotas-plataforma/index.html`.
+
+Um endereço que tente sair da subpasta da fonte (por exemplo, com `..`) é recusado.
 
 ## 5. Props
 
@@ -153,7 +140,7 @@ A renderização acontece no servidor, a cada requisição a `/reader/view/<alia
    - Visitante sem sessão válida (sem cookie, token expirado ou sessão apagada) e fonte não pública: é redirecionado para a página de login, `/reader/?next=<endereço pedido>`, e volta a esse endereço depois de entrar (seção 9).
    - Leitor logado sem acesso à fonte: recebe uma página de "sem acesso". Nunca é mandado de volta ao login, para não ficar em círculo.
    - Alias inexistente recebe a mesma resposta que um alias privado (login para quem não está logado, "sem acesso" para quem está), para que não se descubra quais fontes existem.
-2. Carrega o arquivo do bucket.
+2. Carrega o arquivo da pasta da fonte.
 3. Carrega e combina os props (seção 5).
 4. Se a extensão do arquivo estiver na lista `render` da fonte, o arquivo passa pela engine de templates; caso contrário, é entregue como está.
 5. Devolve o resultado.
@@ -208,7 +195,7 @@ Requisitos da engine:
 | Adicionar leitor | Em `/admin/create-reader`, informa usuário e senha do leitor. |
 | Editar ou remover leitor | Em `/admin/edit-reader`, altera os dados ou clica em remover. |
 | Conceder ou revogar leitura | Em `/admin/edit-reader`, marca as fontes que o leitor pode ler. |
-| Adicionar fonte | Em `/admin/create-source`, escolhe o provedor e informa bucket, pasta, alias, visibilidade, props e, se o provedor exigir, os dados de conexão e credenciais. |
+| Adicionar fonte | Em `/admin/create-source`, escolhe uma subpasta de `sites/` ainda não cadastrada e informa visibilidade, props e extensões renderizadas. |
 | Editar ou remover fonte | Em `/admin/edit-source`. |
 | Editar props da plataforma | Em `/admin/config`. |
 | Gerenciar administradores | Em `/admin/list-admins`, `/admin/create-admin` e `/admin/edit-admin`. |
@@ -241,7 +228,7 @@ Requisitos da engine:
 |---|---|
 | `/reader/` | Login do leitor. Aceita o parâmetro `next`, com o endereço da fonte que o visitante tentava ler: depois do login ele é levado a esse endereço, ou a `/reader/home` se não houver `next` válido. Quem já está logado é levado direto ao destino. |
 | `/reader/home` | Home do leitor: lista as fontes que ele pode ler, com link para cada uma, e dá acesso à edição dos props, às chaves de API e ao botão "Sair". |
-| `/reader/view/<alias>/<arquivo>` | Entrega o arquivo da fonte, trocando o alias por bucket e pasta. Dispensa login em fontes públicas. Em fonte privada, quem não está logado é levado ao login e depois volta a esta página. |
+| `/reader/view/<alias>/<arquivo>` | Entrega o arquivo da subpasta da fonte. Dispensa login em fontes públicas. Em fonte privada, quem não está logado é levado ao login e depois volta a esta página. |
 | `/reader/config` | Edição do JSON de props do leitor. |
 | `/reader/api-keys` | Geração e revogação das chaves de API do leitor. |
 | `/reader/logout` | Encerra a sessão do leitor e leva ao login. |
@@ -254,8 +241,8 @@ Requisitos da engine:
 | `/admin/home` | Painel do administrador: atalhos para fontes, leitores, administradores, props da plataforma e chaves de API. |
 | `/admin/config` | Edição do JSON de props da plataforma. |
 | `/admin/list-sources?<filtros>` | Lista as fontes, com busca por data de criação, quantidade de leitores e outros critérios. |
-| `/admin/create-source` | Cadastro de fonte. |
-| `/admin/edit-source?source-id=<id>` | Edição de provedor, conexão, bucket, pasta, alias, visibilidade e props da fonte; remoção da fonte. |
+| `/admin/create-source` | Cadastro de fonte: lista as subpastas de `sites/` ainda não cadastradas. |
+| `/admin/edit-source?source=<alias>` | Edição de visibilidade, props e extensões renderizadas da fonte; remoção da fonte. O alias não é editável: ele é o nome da subpasta. |
 | `/admin/list-readers?source=<alias>&<filtros>` | Lista os leitores, com filtro por fonte, data de criação e outros critérios. |
 | `/admin/create-reader` | Cadastro de leitor. |
 | `/admin/edit-reader?reader-id=<id>` | Edição de nome, senha e fontes liberadas; remoção do leitor. |
@@ -293,14 +280,14 @@ Todos os dados do sistema ficam em banco **SQLite**. As tabelas, colunas e consu
 |---|---|
 | Administradores | Usuário e resumo da senha. |
 | Leitores | Usuário, resumo da senha e props do leitor. |
-| Fontes | Campos da seção 4, com as credenciais cifradas. |
+| Fontes | Campos da seção 4. |
 | Permissões | Quais leitores podem ler quais fontes. |
 | Props da plataforma | O JSON geral do sistema. |
 | Sessões | Sessões de login ativas, com usuário, papel e validade. |
 | Chaves de API | Resumo da chave, dono e data de criação. |
 | Tentativas da senha root | Contagem de tentativas erradas por hora, para o limite de `/root/setup`. |
 
-Os arquivos dos sites nunca são copiados para o banco: continuam nos buckets.
+Os arquivos dos sites nunca são copiados para o banco: ficam na pasta `sites/` do repositório.
 
 ### Segredos do ambiente
 
@@ -309,29 +296,28 @@ Três valores ficam em variáveis de ambiente, como segredos, e nunca no banco n
 | Segredo | Uso |
 |---|---|
 | Senha root | Libera `/root/setup`. |
-| Chave mestra | Protege tudo o que é sensível no banco (abaixo). |
+| Chave mestra | Entra no cálculo dos resumos de senhas e de chaves de API (abaixo). |
 | Chave de assinatura | Assina os tokens JWT. |
 
 ### Proteção dos dados sensíveis
 
 | Dado | Como é guardado |
 |---|---|
-| Credenciais de provedores (AWS, Google Cloud etc.) | Cifradas com a chave mestra; o sistema precisa recuperá-las para ler o bucket. |
 | Senhas de administradores e leitores | Resumo (*hash*) irreversível, calculado com a chave mestra; o sistema só precisa conferir a senha, nunca recuperá-la. |
 | Chaves de API | Resumo (*hash*) irreversível, calculado com a chave mestra. |
 
 ## 10. Banco de dados
 
-Todos os dados da seção 9 ficam em **um único banco SQLite**, de identificador `canone`. A escolha por um banco só privilegia a simplicidade: as tabelas se relacionam entre si, uma alteração que mexe em várias delas acontece inteira ou não acontece, e as listagens do administrador filtram e cruzam dados livremente. O preço dessa escolha está na seção 12, itens 14 e 15.
+Todos os dados da seção 9 ficam em **um único banco SQLite**, de identificador `canone`. O sistema nunca abre outro banco. A escolha por um banco só privilegia a simplicidade: as tabelas se relacionam entre si, uma alteração que mexe em várias delas acontece inteira ou não acontece, e as listagens do administrador filtram e cruzam dados livremente. O preço dessa escolha está na seção 12, itens 12 e 13.
 
 ### Convenções
 
 | Tipo de dado | Como é guardado |
 |---|---|
-| Identificadores (`id`) | Texto aleatório gerado pelo sistema. Nunca números sequenciais: não podem ser adivinhados e não perdem precisão. |
+| Identificadores (`id`) | Texto aleatório gerado pelo sistema. Nunca números sequenciais: não podem ser adivinhados e não perdem precisão. A fonte é a exceção: seu identificador é o próprio `alias`. |
 | Datas | Número inteiro: milissegundos desde 1º de janeiro de 1970. |
 | Booleanos | Número inteiro: `1` para verdadeiro, `0` para falso. |
-| JSON (props, `render`, `connection`) | Texto. O banco recusa texto que não seja JSON válido. |
+| JSON (props, `render`) | Texto. O banco recusa texto que não seja JSON válido. |
 
 ### Relações
 
@@ -382,16 +368,10 @@ O nome de usuário é único entre os leitores e, separadamente, único entre os
 
 ```sql
 CREATE TABLE sources (
-  id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL DEFAULT 'r2',
-  name TEXT NOT NULL,
-  path TEXT NOT NULL DEFAULT '',
-  alias TEXT NOT NULL UNIQUE,
+  alias TEXT PRIMARY KEY,
   public INTEGER NOT NULL DEFAULT 0 CHECK (public IN (0, 1)),
   props TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(props)),
   render TEXT NOT NULL DEFAULT '["html"]' CHECK (json_valid(render)),
-  connection TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(connection)),
-  credentials TEXT,
   created_at INTEGER NOT NULL
 )
 ```
@@ -400,12 +380,7 @@ CREATE TABLE sources (
 CREATE INDEX sources_created_at ON sources (created_at)
 ```
 
-O campo `connection` da seção 4 ocupa duas colunas, para que o segredo nunca fique misturado com dado legível:
-
-| Coluna | Conteúdo |
-|---|---|
-| `connection` | JSON com os dados não secretos do provedor: região, projeto, endereço do serviço. |
-| `credentials` | As credenciais do provedor, cifradas com a chave mestra. Vazio (`NULL`) em fontes `r2`. Nunca sai do servidor. |
+A tabela guarda só a configuração. Ela não diz onde os arquivos estão: o lugar é sempre `sites/<alias>/`.
 
 Uma fonte nova nasce privada (`public = 0`): tornar pública é sempre uma decisão explícita.
 
@@ -414,14 +389,14 @@ Uma fonte nova nasce privada (`public = 0`): tornar pública é sempre uma decis
 ```sql
 CREATE TABLE permissions (
   reader_id TEXT NOT NULL REFERENCES readers (id) ON DELETE CASCADE,
-  source_id TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+  source_alias TEXT NOT NULL REFERENCES sources (alias) ON DELETE CASCADE,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (reader_id, source_id)
+  PRIMARY KEY (reader_id, source_alias)
 )
 ```
 
 ```sql
-CREATE INDEX permissions_source ON permissions (source_id)
+CREATE INDEX permissions_source ON permissions (source_alias)
 ```
 
 Uma linha significa "este leitor pode ler esta fonte"; revogar é apagar a linha. Remover um leitor ou uma fonte apaga junto as permissões correspondentes. O índice por fonte serve para contar e filtrar os leitores de cada fonte nas listagens.
@@ -548,29 +523,31 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 4. **Administradores com poder total entre si.** Decisão tomada: um administrador pode tudo, inclusive remover todos os outros. Se isso acontecer, `/root/setup` recupera o acesso.
 5. **Fontes públicas.** Qualquer arquivo dentro da pasta de uma fonte pública fica aberto à internet. A tela de edição deve deixar isso evidente ao marcar `public`.
 6. **`/root/setup` é pública.** Precisa de limite de tentativas para a senha root.
-7. **Credenciais de provedores externos.** Diferente do R2, fontes em AWS, Google Cloud e similares obrigam o sistema a guardar chaves de terceiros. Se o banco vazar, essas chaves vazam junto, por isso ficam cifradas com a chave mestra, mantida fora do banco. Qualquer administrador passa a poder cadastrar e trocar essas chaves, então elas devem ser sempre somente leitura e restritas ao bucket.
-8. **Perda ou troca da chave mestra.** Se a chave mestra for perdida ou alterada, todas as credenciais de provedores ficam ilegíveis e todas as senhas e chaves de API deixam de valer. É preciso guardar uma cópia segura dela e prever um procedimento de troca.
-9. **Uma consulta ao banco por requisição.** Conferir a sessão no banco é o que permite cancelar um token na hora (logout, remoção, troca de senha), ao custo de uma leitura no banco a cada arquivo servido de fonte privada. Sessões expiradas precisam de limpeza periódica.
-10. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
-11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 13) passa a ser mais importante nessas fontes.
-12. **Endereço de retorno do login.** O parâmetro `next` vem na URL e pode ser escrito por qualquer pessoa. Sem validação, um link como `/reader/?next=https://site-falso` usaria a tela de login verdadeira para levar o leitor a um site de phishing. Por isso só caminhos internos em `/reader/view/` são aceitos (seção 9).
-13. **Descoberta de aliases.** Se um alias inexistente e um alias privado tivessem respostas diferentes, qualquer visitante descobriria quais fontes privadas existem só testando nomes. As duas situações devem ter a mesma resposta (seção 6).
-14. **Fila única no banco.** O banco atende uma consulta por vez, e todas as leituras de todos os sites passam por ele. A capacidade total fica na ordem de centenas de arquivos por segundo, somando todas as fontes; uma página com 30 arquivos são 30 consultas. Acima disso as requisições passam a falhar, não apenas a ficar lentas. É suficiente para começar, mas não para picos grandes de acesso (seção 13).
-15. **Consulta lenta trava tudo.** Enquanto uma consulta pesada roda, nenhuma outra é atendida, inclusive a leitura dos sites. Por isso as listagens são sempre paginadas e filtram apenas por colunas com índice (seção 10).
-16. **Remoção em cascata.** O esquema conta com o banco para apagar sessões, chaves e permissões quando o dono é removido. Um teste deve confirmar que isso está ativo no ambiente de publicação; se não estiver, as remoções devem apagar esses dados explicitamente, na mesma operação. Sem isso, um leitor removido continuaria com sessão válida.
-17. **Limite de tentativas da senha root é global.** A contagem não separa por visitante, porque um atacante troca de endereço com facilidade. Isso protege a senha, mas permite que alguém bloqueie `/root/setup` por até uma hora só errando de propósito.
+7. **Perda ou troca da chave mestra.** Se a chave mestra for perdida ou alterada, todas as senhas e chaves de API deixam de valer. É preciso guardar uma cópia segura dela; em caso de perda, `/root/setup` permite criar um administrador novo, que recadastra as senhas.
+8. **Uma consulta ao banco por requisição.** Conferir a sessão no banco é o que permite cancelar um token na hora (logout, remoção, troca de senha), ao custo de uma leitura no banco a cada arquivo servido de fonte privada. Sessões expiradas precisam de limpeza periódica.
+9. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
+10. **Endereço de retorno do login.** O parâmetro `next` vem na URL e pode ser escrito por qualquer pessoa. Sem validação, um link como `/reader/?next=https://site-falso` usaria a tela de login verdadeira para levar o leitor a um site de phishing. Por isso só caminhos internos em `/reader/view/` são aceitos (seção 9).
+11. **Descoberta de aliases.** Se um alias inexistente e um alias privado tivessem respostas diferentes, qualquer visitante descobriria quais fontes privadas existem só testando nomes. As duas situações devem ter a mesma resposta (seção 6).
+12. **Fila única no banco.** O banco atende uma consulta por vez, e todas as leituras de todos os sites passam por ele. A capacidade total fica na ordem de centenas de arquivos por segundo, somando todas as fontes; uma página com 30 arquivos são 30 consultas. Acima disso as requisições passam a falhar, não apenas a ficar lentas. É suficiente para começar, mas não para picos grandes de acesso (seção 13).
+13. **Consulta lenta trava tudo.** Enquanto uma consulta pesada roda, nenhuma outra é atendida, inclusive a leitura dos sites. Por isso as listagens são sempre paginadas e filtram apenas por colunas com índice (seção 10).
+14. **Remoção em cascata.** O esquema conta com o banco para apagar sessões, chaves e permissões quando o dono é removido. Um teste deve confirmar que isso está ativo no ambiente de publicação; se não estiver, as remoções devem apagar esses dados explicitamente, na mesma operação. Sem isso, um leitor removido continuaria com sessão válida.
+15. **Limite de tentativas da senha root é global.** A contagem não separa por visitante, porque um atacante troca de endereço com facilidade. Isso protege a senha, mas permite que alguém bloqueie `/root/setup` por até uma hora só errando de propósito.
+16. **Os arquivos não podem ser entregues direto.** Todo arquivo de `sites/` precisa passar pelo sistema antes de chegar ao visitante. Se a pasta for servida como arquivos estáticos comuns, as fontes privadas ficam abertas a qualquer pessoa e os templates aparecem sem renderizar.
+17. **Conteúdo privado dentro do repositório.** Quem consegue ler o repositório lê todas as fontes, inclusive as privadas. O repositório precisa ser privado, e o acesso a ele passa a valer como acesso a todo o conteúdo.
+18. **Publicar conteúdo é publicar o sistema.** Qualquer mudança em um arquivo exige novo envio ao repositório e nova publicação. Um erro no conteúdo e um erro no sistema saem juntos e voltam atrás juntos.
+19. **Tamanho da pasta.** A pasta entra na publicação, que tem limites de quantidade e de tamanho de arquivos. Vídeos e outros arquivos grandes não cabem bem (seção 13).
+20. **Subpasta renomeada ou removida.** Renomear uma subpasta troca o alias: a configuração e as permissões antigas continuam no banco, apontando para uma pasta que não existe mais, e a pasta nova nasce sem cadastro. Os links antigos param de funcionar.
 
 ## 13. Em aberto
 
 Itens que o texto original não define:
 
-- **Como ligar buckets R2 pelo nome.** O projeto hoje oferece um único armazenamento de arquivos, sem escolha de bucket, e no Cloudflare a ligação direta a um bucket é fixada na publicação, não cadastrada em tela. Caminhos possíveis: (a) todas as fontes R2 serem pastas dentro desse armazenamento único; (b) tratar cada bucket R2 como serviço compatível com S3, com credenciais; (c) alterar o modelo do projeto para aceitar vários buckets.
-- Quais provedores entram na primeira versão além do R2. Os externos são alcançáveis pelas chamadas HTTP que o projeto já permite.
-- Se buckets R2 de outra conta Cloudflare devem ser aceitos (nesse caso exigem credenciais, como um serviço compatível com S3).
+- **Como o sistema lê a pasta `sites/`.** O modelo do projeto hoje não oferece ao sistema um jeito de ler arquivos de uma pasta do repositório: a única pasta de arquivos que ele conhece é entregue direto ao visitante, sem login e sem templates (seção 12, item 16). Antes de implementar, o modelo precisa ganhar uma leitura, somente leitura, dessa pasta.
+- Limites de quantidade e de tamanho de arquivos da publicação, a confirmar na Cloudflare (seção 12, item 19).
+- O que fazer com cadastros cuja subpasta sumiu: avisar o administrador, esconder ou apagar (seção 12, item 20).
 - Validade da sessão e como o leitor troca a própria senha.
 - O que entregar quando a URL termina em pasta (sugestão: `index.html`) e quando o arquivo não existe.
 - Limite de tamanho do JSON de props e dos arquivos renderizados.
-- Cache dos arquivos lidos do bucket.
 - Lista completa dos filtros de cada página de listagem. Cada filtro novo precisa de um índice no banco (seção 10).
 - Quantas tentativas erradas da senha root são aceitas por hora.
-- O que fazer se a fila única do banco não bastar (seção 12, item 14). Caminhos possíveis: guardar em memória, por poucos segundos, a fonte e os props (nunca a sessão nem a permissão, que precisam valer na hora); ou repartir as leituras em vários bancos, mantendo um banco central para o painel do administrador.
+- O que fazer se a fila única do banco não bastar (seção 12, item 12). Caminho possível, mantendo um banco só: guardar em memória, por poucos segundos, a fonte e os props (nunca a sessão nem a permissão, que precisam valer na hora).
