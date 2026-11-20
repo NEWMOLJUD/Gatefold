@@ -147,7 +147,12 @@ Resultado do merge:
 
 A renderização acontece no servidor, a cada requisição a `/reader/view/<alias>/<arquivo>`:
 
-1. O sistema resolve o alias e verifica a permissão (fonte pública, ou leitor com acesso).
+1. O sistema resolve o alias e verifica a permissão:
+   - Fonte pública: segue, com ou sem login.
+   - Fonte privada e leitor logado com acesso: segue.
+   - Visitante sem sessão válida (sem cookie, token expirado ou sessão apagada) e fonte não pública: é redirecionado para a página de login, `/reader/?next=<endereço pedido>`, e volta a esse endereço depois de entrar (seção 9).
+   - Leitor logado sem acesso à fonte: recebe uma página de "sem acesso". Nunca é mandado de volta ao login, para não ficar em círculo.
+   - Alias inexistente recebe a mesma resposta que um alias privado (login para quem não está logado, "sem acesso" para quem está), para que não se descubra quais fontes existem.
 2. Carrega o arquivo do bucket.
 3. Carrega e combina os props (seção 5).
 4. Se a extensão do arquivo estiver na lista `render` da fonte, o arquivo passa pela engine de templates; caso contrário, é entregue como está.
@@ -214,7 +219,8 @@ Requisitos da engine:
 
 | Fluxo | Como |
 |---|---|
-| Entrar | Acessa `/reader/` e informa usuário e senha; é levado a `/reader/home`. |
+| Entrar | Acessa `/reader/` e informa usuário e senha; é levado a `/reader/home` ou, se chegou ao login tentando abrir uma fonte, de volta à página que tentava ler. |
+| Abrir uma fonte sem estar logado | Acessa `/reader/view/<alias>/<arquivo>` de uma fonte privada; é levado ao login e, depois de entrar, volta à mesma página. |
 | Ver fontes disponíveis | Em `/reader/home`, vê as fontes liberadas para ele e abre qualquer uma. |
 | Acessar uma página | Acessa `/reader/view/<alias>/<arquivo>`; o sistema renderiza conforme a seção 6. |
 | Personalizar a interface | A partir da home, abre `/reader/config` e edita o próprio JSON de props. |
@@ -233,9 +239,9 @@ Requisitos da engine:
 
 | URL | Descrição |
 |---|---|
-| `/reader/` | Login do leitor. Quem já está logado é levado a `/reader/home`. |
+| `/reader/` | Login do leitor. Aceita o parâmetro `next`, com o endereço da fonte que o visitante tentava ler: depois do login ele é levado a esse endereço, ou a `/reader/home` se não houver `next` válido. Quem já está logado é levado direto ao destino. |
 | `/reader/home` | Home do leitor: lista as fontes que ele pode ler, com link para cada uma, e dá acesso à edição dos props, às chaves de API e ao botão "Sair". |
-| `/reader/view/<alias>/<arquivo>` | Entrega o arquivo da fonte, trocando o alias por bucket e pasta. Dispensa login em fontes públicas. |
+| `/reader/view/<alias>/<arquivo>` | Entrega o arquivo da fonte, trocando o alias por bucket e pasta. Dispensa login em fontes públicas. Em fonte privada, quem não está logado é levado ao login e depois volta a esta página. |
 | `/reader/config` | Edição do JSON de props do leitor. |
 | `/reader/api-keys` | Geração e revogação das chaves de API do leitor. |
 | `/reader/logout` | Encerra a sessão do leitor e leva ao login. |
@@ -276,6 +282,7 @@ Todas as páginas do administrador exibem o botão "Sair".
 - Cada login cria um registro de **sessão** no banco. O token carrega o identificador dessa sessão, o do usuário, o papel (administrador ou leitor) e a validade.
 - A cada requisição o sistema confere a assinatura e a validade do token e se a sessão ainda existe no banco. Sessão apagada significa token recusado, mesmo que ainda não tenha expirado.
 - Remover um usuário ou trocar sua senha apaga todas as sessões dele.
+- **Retorno após o login:** quando um visitante sem sessão válida tenta abrir uma fonte não pública, o sistema o redireciona para `/reader/?next=<endereço pedido>`, guardando o caminho e os parâmetros de query. Após o login, o leitor é levado a esse endereço. O `next` só é aceito se for um caminho interno começando por `/reader/view/`; endereços completos (`https://...`), caminhos com `//` ou `\` e qualquer outro valor são ignorados, e o leitor vai para `/reader/home`. Se, depois de entrar, o leitor não tiver acesso à fonte, vê a página de "sem acesso".
 - **Logout:** `/reader/logout` e `/admin/logout` apagam a sessão no banco e o cookie, e levam à página de login. O token deixa de valer na hora, em qualquer lugar onde tenha sido copiado. Só aceitam envio de formulário (POST), para que um link em outro site não deslogue o usuário. As chaves de API não são afetadas.
 
 ### Armazenamento
@@ -321,6 +328,8 @@ Tudo o que as páginas fazem está disponível em duas famílias de rotas:
 | `/api/admin/*` | Administradores | Cookie de sessão de administrador ou chave de API de administrador. |
 | `/api/reader/*` | Leitores | Cookie de sessão de leitor ou chave de API do leitor. |
 
+Uma chamada à API sem autenticação válida recebe um erro de não autenticado (401). A API nunca redireciona para a página de login: o redirecionamento existe só nas páginas.
+
 Regras das chaves:
 
 - Uma chave de leitor tem exatamente as mesmas permissões de fonte do leitor que a gerou.
@@ -343,6 +352,8 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 9. **Uma consulta ao banco por requisição.** Conferir a sessão no banco é o que permite cancelar um token na hora (logout, remoção, troca de senha), ao custo de uma leitura no banco a cada arquivo servido de fonte privada. Sessões expiradas precisam de limpeza periódica.
 10. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
 11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 12) passa a ser mais importante nessas fontes.
+12. **Endereço de retorno do login.** O parâmetro `next` vem na URL e pode ser escrito por qualquer pessoa. Sem validação, um link como `/reader/?next=https://site-falso` usaria a tela de login verdadeira para levar o leitor a um site de phishing. Por isso só caminhos internos em `/reader/view/` são aceitos (seção 9).
+13. **Descoberta de aliases.** Se um alias inexistente e um alias privado tivessem respostas diferentes, qualquer visitante descobriria quais fontes privadas existem só testando nomes. As duas situações devem ter a mesma resposta (seção 6).
 
 ## 12. Em aberto
 
