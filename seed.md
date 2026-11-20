@@ -287,7 +287,7 @@ Todas as páginas do administrador exibem o botão "Sair".
 
 ### Armazenamento
 
-Todos os dados do sistema ficam em banco **SQLite**:
+Todos os dados do sistema ficam em banco **SQLite**. As tabelas, colunas e consultas estão detalhadas na seção 10.
 
 | Dado | Conteúdo |
 |---|---|
@@ -298,6 +298,7 @@ Todos os dados do sistema ficam em banco **SQLite**:
 | Props da plataforma | O JSON geral do sistema. |
 | Sessões | Sessões de login ativas, com usuário, papel e validade. |
 | Chaves de API | Resumo da chave, dono e data de criação. |
+| Tentativas da senha root | Contagem de tentativas erradas por hora, para o limite de `/root/setup`. |
 
 Os arquivos dos sites nunca são copiados para o banco: continuam nos buckets.
 
@@ -319,7 +320,207 @@ Três valores ficam em variáveis de ambiente, como segredos, e nunca no banco n
 | Senhas de administradores e leitores | Resumo (*hash*) irreversível, calculado com a chave mestra; o sistema só precisa conferir a senha, nunca recuperá-la. |
 | Chaves de API | Resumo (*hash*) irreversível, calculado com a chave mestra. |
 
-## 10. API
+## 10. Banco de dados
+
+Todos os dados da seção 9 ficam em **um único banco SQLite**, de identificador `canone`. A escolha por um banco só privilegia a simplicidade: as tabelas se relacionam entre si, uma alteração que mexe em várias delas acontece inteira ou não acontece, e as listagens do administrador filtram e cruzam dados livremente. O preço dessa escolha está na seção 12, itens 14 e 15.
+
+### Convenções
+
+| Tipo de dado | Como é guardado |
+|---|---|
+| Identificadores (`id`) | Texto aleatório gerado pelo sistema. Nunca números sequenciais: não podem ser adivinhados e não perdem precisão. |
+| Datas | Número inteiro: milissegundos desde 1º de janeiro de 1970. |
+| Booleanos | Número inteiro: `1` para verdadeiro, `0` para falso. |
+| JSON (props, `render`, `connection`) | Texto. O banco recusa texto que não seja JSON válido. |
+
+### Relações
+
+```
+admins ──< sessions >── readers ──< permissions >── sources
+admins ──< api_keys >── readers
+
+platform       (uma linha só)
+root_attempts  (independente)
+```
+
+`──<` significa "um para muitos": um leitor tem várias sessões, várias chaves de API e várias permissões; uma fonte tem várias permissões. Cada sessão e cada chave de API pertence a exatamente um dono, administrador **ou** leitor.
+
+### Tabelas
+
+A lista abaixo, nesta ordem, é o histórico inicial do esquema. Depois de publicada, nenhuma linha dela é editada nem removida: toda mudança no esquema entra como uma nova instrução no fim da lista.
+
+#### `admins` — administradores
+
+```sql
+CREATE TABLE admins (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+)
+```
+
+#### `readers` — leitores
+
+```sql
+CREATE TABLE readers (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  props TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(props)),
+  created_at INTEGER NOT NULL
+)
+```
+
+```sql
+CREATE INDEX readers_created_at ON readers (created_at)
+```
+
+O nome de usuário é único entre os leitores e, separadamente, único entre os administradores: os dois logins são independentes.
+
+#### `sources` — fontes
+
+```sql
+CREATE TABLE sources (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'r2',
+  name TEXT NOT NULL,
+  path TEXT NOT NULL DEFAULT '',
+  alias TEXT NOT NULL UNIQUE,
+  public INTEGER NOT NULL DEFAULT 0 CHECK (public IN (0, 1)),
+  props TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(props)),
+  render TEXT NOT NULL DEFAULT '["html"]' CHECK (json_valid(render)),
+  connection TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(connection)),
+  credentials TEXT,
+  created_at INTEGER NOT NULL
+)
+```
+
+```sql
+CREATE INDEX sources_created_at ON sources (created_at)
+```
+
+O campo `connection` da seção 4 ocupa duas colunas, para que o segredo nunca fique misturado com dado legível:
+
+| Coluna | Conteúdo |
+|---|---|
+| `connection` | JSON com os dados não secretos do provedor: região, projeto, endereço do serviço. |
+| `credentials` | As credenciais do provedor, cifradas com a chave mestra. Vazio (`NULL`) em fontes `r2`. Nunca sai do servidor. |
+
+Uma fonte nova nasce privada (`public = 0`): tornar pública é sempre uma decisão explícita.
+
+#### `permissions` — quem lê o quê
+
+```sql
+CREATE TABLE permissions (
+  reader_id TEXT NOT NULL REFERENCES readers (id) ON DELETE CASCADE,
+  source_id TEXT NOT NULL REFERENCES sources (id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (reader_id, source_id)
+)
+```
+
+```sql
+CREATE INDEX permissions_source ON permissions (source_id)
+```
+
+Uma linha significa "este leitor pode ler esta fonte"; revogar é apagar a linha. Remover um leitor ou uma fonte apaga junto as permissões correspondentes. O índice por fonte serve para contar e filtrar os leitores de cada fonte nas listagens.
+
+#### `platform` — props da plataforma
+
+```sql
+CREATE TABLE platform (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  props TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(props)),
+  updated_at INTEGER NOT NULL
+)
+```
+
+Tem sempre uma única linha (`id = 1`); o banco recusa uma segunda. Se a linha ainda não existir, os props da plataforma valem `{}`.
+
+#### `sessions` — sessões de login
+
+```sql
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY,
+  admin_id TEXT REFERENCES admins (id) ON DELETE CASCADE,
+  reader_id TEXT REFERENCES readers (id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  CHECK ((admin_id IS NULL) <> (reader_id IS NULL))
+)
+```
+
+```sql
+CREATE INDEX sessions_admin ON sessions (admin_id)
+```
+
+```sql
+CREATE INDEX sessions_reader ON sessions (reader_id)
+```
+
+```sql
+CREATE INDEX sessions_expires_at ON sessions (expires_at)
+```
+
+Exatamente uma das colunas `admin_id` e `reader_id` é preenchida, e é ela que define o papel da sessão. Remover o usuário apaga as sessões dele.
+
+#### `api_keys` — chaves de API
+
+```sql
+CREATE TABLE api_keys (
+  id TEXT PRIMARY KEY,
+  key_hash TEXT NOT NULL UNIQUE,
+  admin_id TEXT REFERENCES admins (id) ON DELETE CASCADE,
+  reader_id TEXT REFERENCES readers (id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  CHECK ((admin_id IS NULL) <> (reader_id IS NULL))
+)
+```
+
+```sql
+CREATE INDEX api_keys_admin ON api_keys (admin_id)
+```
+
+```sql
+CREATE INDEX api_keys_reader ON api_keys (reader_id)
+```
+
+Só o resumo da chave é guardado. Uma chamada à API calcula o resumo da chave recebida e procura por ele em `key_hash`. Remover o dono apaga as chaves dele.
+
+#### `root_attempts` — tentativas da senha root
+
+```sql
+CREATE TABLE root_attempts (
+  hour INTEGER PRIMARY KEY,
+  attempts INTEGER NOT NULL
+)
+```
+
+Uma linha por hora, com o total de tentativas erradas da senha root naquela hora. Passado o limite, `/root/setup` recusa novas tentativas até a hora seguinte.
+
+### Consultas por requisição
+
+Regra geral: **cada requisição vai ao banco uma única vez.** Cada ida é uma viagem de rede, e todas as consultas de todos os usuários passam pela mesma fila; por isso as leituras de uma requisição são agrupadas em um só envio, em vez de feitas uma depois da outra.
+
+| Situação | O que a ida única ao banco traz |
+|---|---|
+| `/reader/view/...` com cookie | A sessão (se ainda existe e não venceu) com os props do leitor; a fonte do alias, já com a resposta "este leitor tem permissão?"; e os props da plataforma. |
+| `/reader/view/...` sem cookie | A fonte do alias e os props da plataforma. |
+| Chamada à API com chave | O mesmo que com cookie, localizando o dono por `key_hash` em vez da sessão. |
+| Login | O usuário pelo `username`. Conferida a senha, uma segunda ida grava a sessão. |
+| Logout | Apaga a linha da sessão. |
+| Remover usuário | Apaga o usuário; sessões, chaves e permissões dele saem junto, na mesma operação. |
+| Trocar senha | Grava o novo resumo e apaga as sessões do usuário, na mesma operação. |
+| Listagens do administrador | Sempre paginadas, com filtros apenas sobre colunas que têm índice. |
+
+Operações que mexem em mais de uma tabela são enviadas juntas e valem por inteiro ou não valem: nunca sobra um usuário removido com sessão ainda ativa.
+
+### Limpeza
+
+Uma tarefa agendada apaga periodicamente as sessões vencidas e as linhas antigas de `root_attempts`. Sessão vencida já é recusada mesmo antes de ser apagada, porque toda consulta confere `expires_at`.
+
+## 11. API
 
 Tudo o que as páginas fazem está disponível em duas famílias de rotas:
 
@@ -337,7 +538,7 @@ Regras das chaves:
 - Toda chave pode ser revogada por quem a gerou; chaves de leitor também podem ser revogadas por um administrador.
 - A chave é exibida uma única vez, no momento da geração.
 
-## 11. Pontos de atenção
+## 12. Pontos de atenção
 
 Decisões já tomadas que trazem riscos a tratar na implementação:
 
@@ -351,11 +552,15 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 8. **Perda ou troca da chave mestra.** Se a chave mestra for perdida ou alterada, todas as credenciais de provedores ficam ilegíveis e todas as senhas e chaves de API deixam de valer. É preciso guardar uma cópia segura dela e prever um procedimento de troca.
 9. **Uma consulta ao banco por requisição.** Conferir a sessão no banco é o que permite cancelar um token na hora (logout, remoção, troca de senha), ao custo de uma leitura no banco a cada arquivo servido de fonte privada. Sessões expiradas precisam de limpeza periódica.
 10. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
-11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 12) passa a ser mais importante nessas fontes.
+11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 13) passa a ser mais importante nessas fontes.
 12. **Endereço de retorno do login.** O parâmetro `next` vem na URL e pode ser escrito por qualquer pessoa. Sem validação, um link como `/reader/?next=https://site-falso` usaria a tela de login verdadeira para levar o leitor a um site de phishing. Por isso só caminhos internos em `/reader/view/` são aceitos (seção 9).
 13. **Descoberta de aliases.** Se um alias inexistente e um alias privado tivessem respostas diferentes, qualquer visitante descobriria quais fontes privadas existem só testando nomes. As duas situações devem ter a mesma resposta (seção 6).
+14. **Fila única no banco.** O banco atende uma consulta por vez, e todas as leituras de todos os sites passam por ele. A capacidade total fica na ordem de centenas de arquivos por segundo, somando todas as fontes; uma página com 30 arquivos são 30 consultas. Acima disso as requisições passam a falhar, não apenas a ficar lentas. É suficiente para começar, mas não para picos grandes de acesso (seção 13).
+15. **Consulta lenta trava tudo.** Enquanto uma consulta pesada roda, nenhuma outra é atendida, inclusive a leitura dos sites. Por isso as listagens são sempre paginadas e filtram apenas por colunas com índice (seção 10).
+16. **Remoção em cascata.** O esquema conta com o banco para apagar sessões, chaves e permissões quando o dono é removido. Um teste deve confirmar que isso está ativo no ambiente de publicação; se não estiver, as remoções devem apagar esses dados explicitamente, na mesma operação. Sem isso, um leitor removido continuaria com sessão válida.
+17. **Limite de tentativas da senha root é global.** A contagem não separa por visitante, porque um atacante troca de endereço com facilidade. Isso protege a senha, mas permite que alguém bloqueie `/root/setup` por até uma hora só errando de propósito.
 
-## 12. Em aberto
+## 13. Em aberto
 
 Itens que o texto original não define:
 
@@ -366,4 +571,6 @@ Itens que o texto original não define:
 - O que entregar quando a URL termina em pasta (sugestão: `index.html`) e quando o arquivo não existe.
 - Limite de tamanho do JSON de props e dos arquivos renderizados.
 - Cache dos arquivos lidos do bucket.
-- Lista completa dos filtros de cada página de listagem.
+- Lista completa dos filtros de cada página de listagem. Cada filtro novo precisa de um índice no banco (seção 10).
+- Quantas tentativas erradas da senha root são aceitas por hora.
+- O que fazer se a fila única do banco não bastar (seção 12, item 14). Caminhos possíveis: guardar em memória, por poucos segundos, a fonte e os props (nunca a sessão nem a permissão, que precisam valer na hora); ou repartir as leituras em vários bancos, mantendo um banco central para o painel do administrador.
