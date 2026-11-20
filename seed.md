@@ -66,6 +66,7 @@ Cada fonte tem os campos:
 | `alias` | texto | Nome que substitui bucket e pasta na URL. Único no sistema. |
 | `public` | booleano | `true`: qualquer pessoa acessa, sem login. `false`: só leitores com permissão. |
 | `props` | objeto JSON | Props específicos da fonte. |
+| `render` | lista de texto | Extensões de arquivo que passam pela engine de templates. Padrão: `["html"]`. Lista vazia desliga a renderização na fonte. |
 | `connection` | objeto | Dados e credenciais exigidos pelo provedor. Vazio para `r2`. |
 
 ### Provedores
@@ -82,7 +83,7 @@ Toda fonte funciona do mesmo jeito para o leitor, qualquer que seja o provedor. 
 Regras:
 
 - O sistema só precisa de permissão de **leitura** no bucket; as credenciais informadas devem ter apenas esse acesso.
-- Credenciais são guardadas cifradas e nunca são exibidas de volta, nem nas páginas nem na API. Para trocar, informa-se uma nova.
+- Credenciais são guardadas cifradas com a chave mestra (seção 9) e nunca são exibidas de volta, nem nas páginas nem na API. Para trocar, informa-se uma nova.
 - Ao salvar uma fonte, o sistema testa a conexão e avisa se o bucket não puder ser lido.
 - Novos provedores devem poder ser acrescentados sem mudar o restante do sistema: cada um implementa a mesma operação de "ler um arquivo do bucket".
 
@@ -149,13 +150,16 @@ A renderização acontece no servidor, a cada requisição a `/reader/view/<alia
 1. O sistema resolve o alias e verifica a permissão (fonte pública, ou leitor com acesso).
 2. Carrega o arquivo do bucket.
 3. Carrega e combina os props (seção 5).
-4. Se o arquivo for de texto, passa pela engine de templates; caso contrário, é entregue como está.
+4. Se a extensão do arquivo estiver na lista `render` da fonte, o arquivo passa pela engine de templates; caso contrário, é entregue como está.
 5. Devolve o resultado.
 
 ### O que é renderizado
 
-- **Arquivos de texto** (HTML, CSS, JS, JSON, SVG, TXT e similares): passam pela engine.
-- **Arquivos binários** (imagens, PDFs, fontes tipográficas, vídeos): entregues sem alteração.
+O critério é configurado em cada fonte, no campo `render`:
+
+- Só os arquivos cuja extensão está em `render` passam pela engine. Exemplo: `["html", "css", "json"]`.
+- O padrão de uma fonte nova é `["html"]`.
+- Arquivos binários (imagens, PDFs, fontes tipográficas, vídeos) nunca são renderizados, mesmo que a extensão seja listada.
 
 ### Engine de templates
 
@@ -256,14 +260,42 @@ Requisitos da engine:
 |---|---|
 | `/root/setup` | Página pública protegida pela senha root. Cria e remove administradores. |
 
-## 9. API
+## 9. Autenticação e segredos
+
+### Sessão
+
+- O login (`/admin/` e `/reader/`) devolve um **token JWT** gravado em **cookie**.
+- O cookie é `HttpOnly`, `Secure` e `SameSite`, para que scripts das páginas não consigam lê-lo e outros sites não consigam usá-lo.
+- O token carrega o identificador do usuário, o papel (administrador ou leitor) e a validade.
+- A cada requisição o sistema confere a assinatura e a validade do token, e se o usuário ainda existe.
+- Sair apaga o cookie.
+
+### Segredos do ambiente
+
+Três valores ficam em variáveis de ambiente, como segredos, e nunca no banco nem no código:
+
+| Segredo | Uso |
+|---|---|
+| Senha root | Libera `/root/setup`. |
+| Chave mestra | Protege tudo o que é sensível no banco (abaixo). |
+| Chave de assinatura | Assina os tokens JWT. |
+
+### Proteção dos dados sensíveis
+
+| Dado | Como é guardado |
+|---|---|
+| Credenciais de provedores (AWS, Google Cloud etc.) | Cifradas com a chave mestra; o sistema precisa recuperá-las para ler o bucket. |
+| Senhas de administradores e leitores | Resumo (*hash*) irreversível, calculado com a chave mestra; o sistema só precisa conferir a senha, nunca recuperá-la. |
+| Chaves de API | Resumo (*hash*) irreversível, calculado com a chave mestra. |
+
+## 10. API
 
 Tudo o que as páginas fazem está disponível em duas famílias de rotas:
 
 | Prefixo | Público | Autenticação |
 |---|---|---|
-| `/api/admin/*` | Administradores | Sessão de administrador ou chave de API de administrador. |
-| `/api/reader/*` | Leitores | Sessão de leitor ou chave de API do leitor. |
+| `/api/admin/*` | Administradores | Cookie de sessão de administrador ou chave de API de administrador. |
+| `/api/reader/*` | Leitores | Cookie de sessão de leitor ou chave de API do leitor. |
 
 Regras das chaves:
 
@@ -272,27 +304,30 @@ Regras das chaves:
 - Toda chave pode ser revogada por quem a gerou; chaves de leitor também podem ser revogadas por um administrador.
 - A chave é exibida uma única vez, no momento da geração.
 
-## 10. Pontos de atenção
+## 11. Pontos de atenção
 
 Decisões já tomadas que trazem riscos a tratar na implementação:
 
-1. **Renderizar todo arquivo de texto.** Arquivos JS e CSS que já contenham `{{` ou `{%` (por exemplo, código de Vue, Handlebars ou certos objetos em JS) serão interpretados e podem quebrar. O bloco "cru" resolve, mas exige que o autor do site saiba disso. Vale considerar uma opção por fonte para desligar a renderização em JS/CSS.
-2. **Cabeçalhos expostos ao template.** `headers` inclui cookies e credenciais da requisição. Um template de uma fonte poderia imprimi-los na página. Recomenda-se ocultar `cookie` e `authorization` antes de entregar os cabeçalhos à engine.
+1. **Renderizar JS e CSS.** Se uma fonte incluir `js` ou `css` em `render`, arquivos que já contenham `{{` ou `{%` (por exemplo, código de Vue ou Handlebars) serão interpretados e podem quebrar. O bloco "cru" resolve. A tela de edição da fonte deve avisar sobre isso.
+2. **Cabeçalhos expostos ao template.** `headers` inclui cookies e credenciais da requisição. Um template de uma fonte poderia imprimi-los na página. Como a sessão fica em cookie, isso exporia o token de login: `cookie` e `authorization` devem ser ocultados antes de entregar os cabeçalhos à engine.
 3. **Props livres do leitor.** Como o leitor sobrescreve qualquer chave, nenhum template deve usar props para esconder conteúdo sensível. O escape por padrão na engine evita que um valor de props injete HTML ou script.
-4. **Administradores com poder total entre si.** Um administrador pode remover todos os outros. Recomenda-se impedir a remoção do último administrador; em último caso, `/root/setup` recupera o acesso.
+4. **Administradores com poder total entre si.** Decisão tomada: um administrador pode tudo, inclusive remover todos os outros. Se isso acontecer, `/root/setup` recupera o acesso.
 5. **Fontes públicas.** Qualquer arquivo dentro da pasta de uma fonte pública fica aberto à internet. A tela de edição deve deixar isso evidente ao marcar `public`.
 6. **`/root/setup` é pública.** Precisa de limite de tentativas para a senha root.
-7. **Credenciais de provedores externos.** Diferente do R2, fontes em AWS, Google Cloud e similares obrigam o sistema a guardar chaves de terceiros. Se o banco vazar, essas chaves vazam junto, a menos que estejam cifradas com uma chave mestra mantida fora do banco (como segredo do ambiente). Qualquer administrador passa a poder cadastrar e trocar essas chaves, então elas devem ser sempre somente leitura e restritas ao bucket.
-8. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 11) passa a ser mais importante nessas fontes.
+7. **Credenciais de provedores externos.** Diferente do R2, fontes em AWS, Google Cloud e similares obrigam o sistema a guardar chaves de terceiros. Se o banco vazar, essas chaves vazam junto, por isso ficam cifradas com a chave mestra, mantida fora do banco. Qualquer administrador passa a poder cadastrar e trocar essas chaves, então elas devem ser sempre somente leitura e restritas ao bucket.
+8. **Perda ou troca da chave mestra.** Se a chave mestra for perdida ou alterada, todas as credenciais de provedores ficam ilegíveis e todas as senhas e chaves de API deixam de valer. É preciso guardar uma cópia segura dela e prever um procedimento de troca.
+9. **Token JWT não se cancela sozinho.** Um token continua válido até expirar. Conferir a cada requisição se o usuário ainda existe resolve a remoção de um leitor; para a troca de senha, o token deve ter validade curta ou carregar uma versão que muda junto com a senha.
+10. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
+11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 12) passa a ser mais importante nessas fontes.
 
-## 11. Em aberto
+## 12. Em aberto
 
 Itens que o texto original não define:
 
 - Onde ficam guardados usuários, fontes, permissões e props.
 - Quais provedores entram na primeira versão além do R2, e se o modelo atual do projeto já permite chamar serviços externos de armazenamento.
 - Se buckets R2 de outra conta Cloudflare devem ser aceitos (nesse caso exigem credenciais, como um serviço compatível com S3).
-- Duração da sessão de login e como o leitor troca a própria senha.
+- Validade do token de sessão e como o leitor troca a própria senha.
 - O que entregar quando a URL termina em pasta (sugestão: `index.html`) e quando o arquivo não existe.
 - Limite de tamanho do JSON de props e dos arquivos renderizados.
 - Cache dos arquivos lidos do bucket.
