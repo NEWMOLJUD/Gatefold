@@ -1,11 +1,11 @@
-// A API (seed.md, seção 11): tudo o que as páginas fazem, em JSON.
+// The API: everything the pages do, in JSON.
 //
-//   /api/admin/*    cookie de administrador ou chave "cn_a_..."
-//   /api/reader/*   cookie de leitor ou chave "cn_r_..."
-//   /api/root/*     senha root no cabeçalho X-Root-Password
+//   /api/admin/*    administrator cookie or a "cn_a_..." key
+//   /api/reader/*   reader cookie or a "cn_r_..." key
+//   /api/root/*     root password in the X-Root-Password header
 //
-// A chave vai no cabeçalho `Authorization: Bearer <chave>`. Sem autenticação
-// válida a resposta é 401; a API nunca redireciona para o login.
+// The key goes in the `Authorization: Bearer <key>` header. Without valid
+// authentication the answer is 401; the API never redirects to the login.
 import type { Server } from "../deps/server.ts";
 import {
   type Ctx, HttpError, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Statement, type UserRef, accountQueries, accountsPage,
@@ -26,9 +26,9 @@ async function body(request: Request): Promise<Record<string, unknown>> {
   try {
     parsed = await request.json();
   } catch {
-    throw new HttpError(400, "O corpo da requisição deve ser JSON.");
+    throw new HttpError(400, "The request body must be JSON.");
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "O corpo da requisição deve ser um objeto JSON.");
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "The request body must be a JSON object.");
   return parsed as Record<string, unknown>;
 }
 
@@ -48,11 +48,11 @@ export function registerApi(server: Server, ctx: Ctx): void {
 
   const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
     const { session } = await identify(ctx, request, role, { allowKey: true, reads });
-    if (!session) throw new HttpError(401, "Não autenticado.");
+    if (!session) throw new HttpError(401, "Not authenticated.");
     return session;
   };
 
-  // Comum aos dois papéis ----------------------------------------------------
+  // Common to both roles ------------------------------------------------------
 
   for (const role of ["admin", "reader"] as const) {
     route("POST", `/api/${role}/login`, async (request) => {
@@ -73,7 +73,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
       return { items: apiKeys(session.rows[0]) };
     });
 
-    // A resposta traz `key`, a chave em si. É a única vez em que ela aparece.
+    // The response carries `key`, the key itself. It is the only time it appears.
     route("POST", `/api/${role}/api-keys`, async (request) => {
       const session = await enter(request, role);
       return Response.json(await createApiKey(ctx, role, session.user.id), { status: 201, headers: NO_STORE });
@@ -86,7 +86,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
     });
   }
 
-  // Administrador ------------------------------------------------------------
+  // Administrator ------------------------------------------------------------
 
   route("GET", "/api/admin/config", async (request) => {
     const session = await enter(request, "admin", () => [PLATFORM_PROPS]);
@@ -99,13 +99,13 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
-  // Filtros: q, created_from, created_to, min_readers, page.
+  // Filters: q, created_from, created_to, min_readers, page.
   route("GET", "/api/admin/sources", async (request, url) => {
     const session = await enter(request, "admin", () => [listSourcesQuery(url.searchParams)]);
     return sourcesPage(ctx, session.rows[0] ?? [], url.searchParams);
   });
 
-  // Subpastas de sites/ que ainda podem ser cadastradas.
+  // Subfolders of sites/ that can still be registered.
   route("GET", "/api/admin/available-sources", async (request) => {
     const session = await enter(request, "admin", () => [SOURCE_ALIASES]);
     return { items: availableFolders(ctx, session.rows[0] ?? []) };
@@ -137,7 +137,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
   for (const role of ["reader", "admin"] as const) {
     const base = `/api/admin/${role}s`;
 
-    // Filtros: q, page e, para leitores, source, created_from, created_to.
+    // Filters: q, page and, for readers, source, created_from, created_to.
     route("GET", base, async (request, url) => {
       const session = await enter(request, "admin", () => [listAccountsQuery(role, url.searchParams)]);
       return accountsPage(session.rows[0] ?? [], url.searchParams);
@@ -153,7 +153,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
       return oneAccount(session.rows);
     });
 
-    // Campos opcionais: username, password e, para leitores, sources (lista completa de aliases liberados).
+    // Optional fields: username, password and, for readers, sources (the complete list of granted aliases).
     route("PUT", `${base}/:id`, async (request, _url, params) => {
       await enter(request, "admin");
       await updateAccount(ctx, role, params.id ?? "", await body(request));
@@ -173,7 +173,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
-  // Leitor -------------------------------------------------------------------
+  // Reader -------------------------------------------------------------------
 
   route("GET", "/api/reader/sources", async (request) => {
     const session = await enter(request, "reader", (user) => [readableSourcesQuery(user)]);

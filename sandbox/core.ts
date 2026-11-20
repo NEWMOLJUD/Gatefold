@@ -1,5 +1,5 @@
-// O miolo do Canone: esquema do banco, autenticação e as operações que as
-// páginas e a API compartilham. Nenhuma rota é definida aqui.
+// The core of Canone: database schema, authentication and the operations the
+// pages and the API share. No route is defined here.
 import type { Database, SqlParam, SqlValue } from "../deps/databases.ts";
 import type { Secrets } from "../deps/secrets.ts";
 import type { Sites } from "../deps/sites.ts";
@@ -9,8 +9,8 @@ import {
 } from "./security.ts";
 
 /**
- * Histórico do esquema (seed.md, seção 10). Depois de publicado, nenhuma linha
- * é editada nem removida: toda mudança entra como instrução nova no fim.
+ * Schema history. Once published, no statement is edited or removed: every
+ * change is appended as a new statement at the end.
  */
 export const MIGRATIONS = [
   `CREATE TABLE admins (
@@ -74,14 +74,13 @@ export const MIGRATIONS = [
 )`,
 ];
 
-// Decisões para os itens que o seed deixa em aberto (seção 13).
-/** Validade de uma sessão de login. */
+/** How long a login session lasts. */
 export const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
-/** Tentativas erradas da senha root aceitas por hora, somando todos os visitantes. */
+/** Wrong root password attempts accepted per hour, counting all visitors together. */
 export const ROOT_ATTEMPTS_PER_HOUR = 5;
-/** Tamanho máximo de um JSON de props, em caracteres. */
+/** Maximum size of a props JSON, in characters. */
 export const MAX_PROPS = 64 * 1024;
-/** Itens por página nas listagens. */
+/** Items per page in listings. */
 export const PAGE_SIZE = 50;
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -96,7 +95,7 @@ export type Statement = [sql: string, ...params: SqlParam[]];
 export type Row = Record<string, SqlValue>;
 type Input = Record<string, unknown>;
 
-/** Erro com mensagem para quem fez a requisição. */
+/** An error whose message is meant for whoever made the request. */
 export class HttpError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -105,7 +104,7 @@ export class HttpError extends Error {
   }
 }
 
-/** Interrompe o atendimento com uma resposta pronta (um redirecionamento, por exemplo). */
+/** Stops the handler with a ready response (a redirect, for example). */
 export class Reply {
   response: Response;
   constructor(response: Response) {
@@ -120,55 +119,58 @@ export function redirect(location: string, cookies: string[] = []): Response {
 }
 
 // ---------------------------------------------------------------------------
-// Validação
+// Validation
 // ---------------------------------------------------------------------------
 
 export const ALIAS = /^[a-z0-9-]+$/;
 
+/** sites/label/ holds the white-label files (logo, colours); it is never a source. */
+export const RESERVED_ALIAS = "label";
+
 function username(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9._@-]{3,64}$/.test(value)) {
-    throw new HttpError(400, "O usuário deve ter de 3 a 64 caracteres: letras, números, ponto, hífen, sublinhado ou @.");
+    throw new HttpError(400, "The username must have 3 to 64 characters: letters, digits, dot, hyphen, underscore or @.");
   }
   return value;
 }
 
 function password(value: unknown): string {
   if (typeof value !== "string" || value.length < 8 || value.length > 256) {
-    throw new HttpError(400, "A senha deve ter de 8 a 256 caracteres.");
+    throw new HttpError(400, "The password must have 8 to 256 characters.");
   }
   return value;
 }
 
-/** Aceita o objeto (API) ou o texto JSON (formulário) e devolve o texto a gravar. */
+/** Accepts the object (API) or the JSON text (form) and returns the text to store. */
 export function propsText(value: unknown): string {
   let parsed = value;
   if (typeof value === "string") {
     try {
       parsed = JSON.parse(value.trim() === "" ? "{}" : value);
     } catch {
-      throw new HttpError(400, "Os props não são um JSON válido.");
+      throw new HttpError(400, "The props are not valid JSON.");
     }
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new HttpError(400, 'Os props devem ser um objeto JSON, por exemplo {"tema": "escuro"}.');
+    throw new HttpError(400, 'The props must be a JSON object, for example {"theme": "dark"}.');
   }
   const text = JSON.stringify(parsed);
-  if (text.length > MAX_PROPS) throw new HttpError(400, `Os props passam do tamanho máximo (${MAX_PROPS} caracteres).`);
+  if (text.length > MAX_PROPS) throw new HttpError(400, `The props exceed the maximum size (${MAX_PROPS} characters).`);
   return text;
 }
 
-/** Aceita a lista (API) ou o texto "html, css" (formulário). */
+/** Accepts the list (API) or the text "html, css" (form). */
 export function renderText(value: unknown): string {
   const items = typeof value === "string" ? value.split(/[\s,;]+/) : value;
-  if (!Array.isArray(items)) throw new HttpError(400, 'As extensões renderizadas devem ser uma lista, por exemplo ["html", "css"].');
+  if (!Array.isArray(items)) throw new HttpError(400, 'The rendered extensions must be a list, for example ["html", "css"].');
   const extensions: string[] = [];
   for (const item of items) {
     if (item === "") continue;
     const extension = typeof item === "string" ? item.replace(/^\./, "").toLowerCase() : "";
-    if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new HttpError(400, `Extensão inválida: ${JSON.stringify(item)}. Use nomes como "html" ou "css".`);
+    if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new HttpError(400, `Invalid extension: ${JSON.stringify(item)}. Use names such as "html" or "css".`);
     if (!extensions.includes(extension)) extensions.push(extension);
   }
-  if (extensions.length > 30) throw new HttpError(400, "Extensões demais: o máximo é 30.");
+  if (extensions.length > 30) throw new HttpError(400, "Too many extensions: the maximum is 30.");
   return JSON.stringify(extensions);
 }
 
@@ -200,26 +202,26 @@ function conflict(error: unknown, message: string): never {
 }
 
 // ---------------------------------------------------------------------------
-// Autenticação
+// Authentication
 // ---------------------------------------------------------------------------
 
 export interface User {
   id: string;
   username: string;
-  /** Só leitores têm props. */
+  /** Only readers have props. */
   props: Record<string, unknown>;
 }
 
 export interface Session {
   role: Role;
   user: User;
-  /** Autenticado por chave de API, e não por cookie. */
+  /** Authenticated by API key rather than by cookie. */
   viaKey: boolean;
-  /** Linhas das leituras pedidas junto com a conferência da sessão. */
+  /** Rows of the reads requested together with the session check. */
   rows: Row[][];
 }
 
-/** Como o SQL chega ao identificador do usuário autenticado, antes de o banco responder. */
+/** How SQL reaches the authenticated user's identifier, before the database has answered. */
 export interface UserRef {
   sql: string;
   params: SqlParam[];
@@ -245,10 +247,10 @@ async function credential(ctx: Ctx, request: Request, role: Role, allowKey: bool
 }
 
 /**
- * Confere quem está chamando e, na mesma ida ao banco, faz as leituras de
- * `reads`. Devolve `null` quando não há sessão nem chave válida; nesse caso as
- * leituras são descartadas. `visitorReads` roda no lugar delas quando o
- * pedido chega sem credencial nenhuma (fontes públicas).
+ * Checks who is calling and, in the same database round trip, runs the reads
+ * in `reads`. Returns a `null` session when there is no valid session or key;
+ * the reads are discarded in that case. `visitorReads` runs in their place
+ * when the request carries no credential at all (public sources).
  */
 export async function identify(
   ctx: Ctx,
@@ -278,7 +280,7 @@ export async function identify(
   const row = who[0];
   if (!row) return { session: null, rows };
   if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) {
-    throw new HttpError(403, "Requisição recusada: ela não partiu deste site.");
+    throw new HttpError(403, "Request refused: it did not come from this site.");
   }
   const user: User = { id: String(row.id), username: String(row.username), props: parseObject(row.props) };
   return { session: { role, user, viaKey: found.kind === "key", rows }, rows };
@@ -289,13 +291,13 @@ export interface LoginResult {
   user: { id: string; username: string };
 }
 
-/** Duas idas ao banco: buscar o usuário e, conferida a senha, gravar a sessão. */
+/** Two database round trips: fetch the user and, once the password checks out, store the session. */
 export async function login(ctx: Ctx, role: Role, input: Input): Promise<LoginResult> {
   const name = typeof input.username === "string" ? input.username : "";
   const secret = typeof input.password === "string" ? input.password.slice(0, 256) : "";
   const [row] = await ctx.db.query(`SELECT id, username, password_hash FROM ${TABLE[role].table} WHERE username = ?`, name);
   const valid = await verifyPassword(ctx.secrets.get(SECRET_MASTER), secret, row ? String(row.password_hash) : null);
-  if (!row || !valid) throw new HttpError(401, "Usuário ou senha inválidos.");
+  if (!row || !valid) throw new HttpError(401, "Invalid username or password.");
   const now = Date.now();
   const sid = randomId();
   const id = String(row.id);
@@ -304,30 +306,30 @@ export async function login(ctx: Ctx, role: Role, input: Input): Promise<LoginRe
   return { cookie: sessionCookie(role, token, SESSION_MS / 1000), user: { id, username: String(row.username) } };
 }
 
-/** Apaga a sessão do cookie, se houver uma, e devolve o cookie que limpa o navegador. */
+/** Deletes the cookie's session, if there is one, and returns the cookie that clears the browser. */
 export async function logout(ctx: Ctx, request: Request, role: Role): Promise<string> {
-  if (!sameOrigin(request)) throw new HttpError(403, "Requisição recusada: ela não partiu deste site.");
+  if (!sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
   const token = readCookie(request, cookieName(role));
   const claims = token ? await verifyToken(ctx.secrets.get(SECRET_SIGNING), token, Date.now()) : null;
   if (claims && claims.role === role) await ctx.db.query("DELETE FROM sessions WHERE id = ?", claims.sid);
   return clearCookie(role);
 }
 
-/** Senha root com limite global de tentativas por hora (seção 12, itens 6 e 15). */
+/** Root password, with a global limit of wrong attempts per hour. */
 export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
-  if (request.method !== "GET" && !sameOrigin(request)) throw new HttpError(403, "Requisição recusada: ela não partiu deste site.");
+  if (request.method !== "GET" && !sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
   const hour = Math.floor(Date.now() / HOUR_MS);
   const [row] = await ctx.db.query("SELECT attempts FROM root_attempts WHERE hour = ?", hour);
   if (Number(row?.attempts ?? 0) >= ROOT_ATTEMPTS_PER_HOUR) {
-    throw new HttpError(429, "Muitas tentativas erradas da senha root. Tente de novo na próxima hora.");
+    throw new HttpError(429, "Too many wrong root password attempts. Try again in the next hour.");
   }
   const given = request.headers.get("x-root-password") ?? "";
   if (given !== "" && (await safeEqual(given, ctx.secrets.get(SECRET_ROOT)))) return;
   await ctx.db.query("INSERT INTO root_attempts (hour, attempts) VALUES (?, 1) ON CONFLICT (hour) DO UPDATE SET attempts = attempts + 1", hour);
-  throw new HttpError(401, "Senha root incorreta.");
+  throw new HttpError(401, "Wrong root password.");
 }
 
-/** Tarefa agendada: sessões vencidas e contagens antigas da senha root. */
+/** Scheduled job: expired sessions and old root password attempt counts. */
 export async function cleanup(ctx: Ctx, time: Date): Promise<void> {
   await ctx.db.batch([
     ["DELETE FROM sessions WHERE expires_at < ?", time.getTime()],
@@ -336,7 +338,7 @@ export async function cleanup(ctx: Ctx, time: Date): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Listagens
+// Listings
 // ---------------------------------------------------------------------------
 
 export interface Page<Item> {
@@ -345,16 +347,16 @@ export interface Page<Item> {
   hasNext: boolean;
 }
 
-/** "2026-01-31" (dia inteiro, em UTC) ou milissegundos desde 1970. */
+/** "2026-01-31" (the whole day, in UTC) or milliseconds since 1970. */
 function dateFilter(value: string | null, endOfDay: boolean): number | null {
   if (!value) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     const start = Date.parse(`${value}T00:00:00Z`);
-    if (Number.isNaN(start)) throw new HttpError(400, `Data inválida: ${value}.`);
+    if (Number.isNaN(start)) throw new HttpError(400, `Invalid date: ${value}.`);
     return endOfDay ? start + 24 * HOUR_MS - 1 : start;
   }
   if (/^\d{1,15}$/.test(value)) return Number(value);
-  throw new HttpError(400, `Data inválida: ${value}. Use o formato AAAA-MM-DD.`);
+  throw new HttpError(400, `Invalid date: ${value}. Use the format YYYY-MM-DD.`);
 }
 
 function pageNumber(filters: URLSearchParams): number {
@@ -362,7 +364,7 @@ function pageNumber(filters: URLSearchParams): number {
   return Number.isInteger(page) && page >= 1 && page <= 100_000 ? page : 1;
 }
 
-/** Filtros comuns, todos sobre colunas com índice: começo do nome e intervalo de criação. */
+/** Common filters, all on indexed columns: name prefix and creation range. */
 function commonFilters(filters: URLSearchParams, nameColumn: string, dateColumn: string | null): { where: string[]; params: SqlParam[] } {
   const where: string[] = [];
   const params: SqlParam[] = [];
@@ -385,7 +387,7 @@ function paged<Item>(rows: Row[], page: number, map: (row: Row) => Item): Page<I
 }
 
 // ---------------------------------------------------------------------------
-// Fontes
+// Sources
 // ---------------------------------------------------------------------------
 
 export interface Source {
@@ -394,9 +396,9 @@ export interface Source {
   props: Record<string, unknown>;
   render: string[];
   created_at: number;
-  /** Leitores com permissão. */
+  /** Readers with permission. */
   readers: number;
-  /** A subpasta sumiu do repositório: a fonte responde "não encontrado" até ela voltar ou o cadastro ser removido. */
+  /** The subfolder is gone from the repository: the source answers "not found" until it returns or the source is removed. */
   missing: boolean;
 }
 
@@ -416,7 +418,7 @@ function toSource(ctx: Ctx, row: Row): Source {
 const SOURCE_COLUMNS =
   "s.alias, s.public, s.props, s.render, s.created_at, (SELECT COUNT(*) FROM permissions p WHERE p.source_alias = s.alias) AS readers";
 
-/** Filtros: `q` (começo do alias), `created_from`, `created_to`, `min_readers`, `page`. */
+/** Filters: `q` (alias prefix), `created_from`, `created_to`, `min_readers`, `page`. */
 export function listSourcesQuery(filters: URLSearchParams): Statement {
   const { where, params } = commonFilters(filters, "s.alias", "s.created_at");
   const minimum = Number(filters.get("min_readers") ?? "0");
@@ -434,10 +436,10 @@ export function sourcesPage(ctx: Ctx, rows: Row[], filters: URLSearchParams): Pa
 
 export const SOURCE_ALIASES: Statement = ["SELECT alias, public FROM sources ORDER BY alias"];
 
-/** Subpastas de `sites/` com nome válido e ainda sem cadastro. */
+/** Subfolders of `sites/` with a valid name that are not registered yet. */
 export function availableFolders(ctx: Ctx, registered: Row[]): string[] {
   const taken = new Set(registered.map((row) => String(row.alias)));
-  return ctx.sites.folders().filter((name) => ALIAS.test(name) && !taken.has(name));
+  return ctx.sites.folders().filter((name) => ALIAS.test(name) && name !== RESERVED_ALIAS && !taken.has(name));
 }
 
 export function sourceQuery(alias: string): Statement {
@@ -445,21 +447,22 @@ export function sourceQuery(alias: string): Statement {
 }
 
 export function oneSource(ctx: Ctx, rows: Row[]): Source {
-  if (!rows[0]) throw new HttpError(404, "Fonte não encontrada.");
+  if (!rows[0]) throw new HttpError(404, "Source not found.");
   return toSource(ctx, rows[0]);
 }
 
 export async function createSource(ctx: Ctx, input: Input): Promise<void> {
   const alias = typeof input.alias === "string" ? input.alias : "";
-  if (!ALIAS.test(alias)) throw new HttpError(400, "O alias usa apenas letras minúsculas, números e hífen.");
-  if (!ctx.sites.folders().includes(alias)) throw new HttpError(400, `Não existe a subpasta sites/${alias}/ nesta publicação.`);
+  if (!ALIAS.test(alias)) throw new HttpError(400, "The alias uses only lowercase letters, digits and hyphens.");
+  if (alias === RESERVED_ALIAS) throw new HttpError(400, 'The folder "label" holds the white-label files and cannot be a source.');
+  if (!ctx.sites.folders().includes(alias)) throw new HttpError(400, `There is no sites/${alias}/ subfolder in this deployment.`);
   try {
     await ctx.db.query(
       "INSERT INTO sources (alias, public, props, render, created_at) VALUES (?, ?, ?, ?, ?)",
       alias, flag(input.public), propsText(input.props ?? {}), renderText(input.render ?? ["html"]), Date.now(),
     );
   } catch (error) {
-    conflict(error, "Esta subpasta já está cadastrada como fonte.");
+    conflict(error, "This subfolder is already registered as a source.");
   }
 }
 
@@ -469,29 +472,29 @@ export async function updateSource(ctx: Ctx, alias: string, input: Input): Promi
   if (input.public !== undefined) (sets.push("public = ?"), params.push(flag(input.public)));
   if (input.props !== undefined) (sets.push("props = ?"), params.push(propsText(input.props)));
   if (input.render !== undefined) (sets.push("render = ?"), params.push(renderText(input.render)));
-  if (sets.length === 0) throw new HttpError(400, "Nada para alterar.");
+  if (sets.length === 0) throw new HttpError(400, "Nothing to change.");
   const changed = await ctx.db.query(`UPDATE sources SET ${sets.join(", ")} WHERE alias = ? RETURNING alias`, ...params, alias);
-  if (changed.length === 0) throw new HttpError(404, "Fonte não encontrada.");
+  if (changed.length === 0) throw new HttpError(404, "Source not found.");
 }
 
-/** A configuração e as permissões saem juntas. Os arquivos continuam na pasta. */
+/** The configuration and the permissions go together. The files stay in the folder. */
 export async function deleteSource(ctx: Ctx, alias: string): Promise<void> {
   const [, removed = []] = await ctx.db.batch([
     ["DELETE FROM permissions WHERE source_alias = ?", alias],
     ["DELETE FROM sources WHERE alias = ? RETURNING alias", alias],
   ]);
-  if (removed.length === 0) throw new HttpError(404, "Fonte não encontrada.");
+  if (removed.length === 0) throw new HttpError(404, "Source not found.");
 }
 
 // ---------------------------------------------------------------------------
-// Usuários (administradores e leitores)
+// Users (administrators and readers)
 // ---------------------------------------------------------------------------
 
 export interface Account {
   id: string;
   username: string;
   created_at: number;
-  /** Leitores: fontes privadas liberadas. */
+  /** Readers: private sources granted. */
   sources?: number;
 }
 
@@ -504,9 +507,9 @@ function toAccount(row: Row): Account {
   };
 }
 
-/** Filtros: `q` (começo do usuário), `created_from`, `created_to`, `page` e, para leitores, `source`. */
+/** Filters: `q` (username prefix), `created_from`, `created_to`, `page` and, for readers, `source`. */
 export function listAccountsQuery(role: Role, filters: URLSearchParams): Statement {
-  // Administradores não têm índice por data de criação: só o filtro por nome.
+  // Administrators have no index on creation date: only the name filter.
   const { where, params } = commonFilters(filters, "u.username", role === "reader" ? "u.created_at" : null);
   const source = role === "reader" ? filters.get("source") : null;
   if (source) {
@@ -536,7 +539,7 @@ export async function createAccount(ctx: Ctx, role: Role, input: Input): Promise
       account.id, name, hash, account.created_at,
     );
   } catch (error) {
-    conflict(error, "Já existe um usuário com este nome.");
+    conflict(error, "A user with this name already exists.");
   }
   return account;
 }
@@ -555,13 +558,13 @@ export function accountQueries(role: Role, id: string): Statement[] {
 
 export interface AccountDetail extends Account {
   api_keys: ApiKey[];
-  /** Leitores: aliases liberados. */
+  /** Readers: granted aliases. */
   allowed?: string[];
 }
 
 export function oneAccount(rows: Row[][]): AccountDetail {
   const row = rows[0]?.[0];
-  if (!row) throw new HttpError(404, "Usuário não encontrado.");
+  if (!row) throw new HttpError(404, "User not found.");
   return {
     ...toAccount(row),
     api_keys: (rows[1] ?? []).map(toApiKey),
@@ -570,8 +573,9 @@ export function oneAccount(rows: Row[][]): AccountDetail {
 }
 
 /**
- * Altera nome, senha e, para leitores, as fontes liberadas (`sources`: a lista
- * completa de aliases). Tudo em uma operação; trocar a senha apaga as sessões.
+ * Changes the name, the password and, for readers, the granted sources
+ * (`sources`: the complete list of aliases). All in one operation; changing
+ * the password deletes the sessions.
  */
 export async function updateAccount(ctx: Ctx, role: Role, id: string, input: Input): Promise<void> {
   const { table, column } = TABLE[role];
@@ -583,30 +587,30 @@ export async function updateAccount(ctx: Ctx, role: Role, id: string, input: Inp
   }
   if (role === "reader" && input.sources !== undefined) {
     const aliases = Array.isArray(input.sources) ? input.sources : [input.sources];
-    if (aliases.length > 1000 || aliases.some((alias) => typeof alias !== "string")) throw new HttpError(400, "Lista de fontes inválida.");
+    if (aliases.length > 1000 || aliases.some((alias) => typeof alias !== "string")) throw new HttpError(400, "Invalid list of sources.");
     const now = Date.now();
     statements.push(["DELETE FROM permissions WHERE reader_id = ?", id]);
     for (const alias of new Set(aliases as string[])) {
-      // Só entra a permissão se o leitor e a fonte existirem.
+      // The permission is only inserted if both the reader and the source exist.
       statements.push([
         "INSERT INTO permissions (reader_id, source_alias, created_at) SELECT r.id, s.alias, ? FROM readers r, sources s WHERE r.id = ? AND s.alias = ?",
         now, id, alias,
       ]);
     }
   }
-  if (statements.length === 1) throw new HttpError(400, "Nada para alterar.");
+  if (statements.length === 1) throw new HttpError(400, "Nothing to change.");
   let found: Row[] | undefined;
   try {
     [found] = await ctx.db.batch(statements);
   } catch (error) {
-    conflict(error, "Já existe um usuário com este nome.");
+    conflict(error, "A user with this name already exists.");
   }
-  if (!found || found.length === 0) throw new HttpError(404, "Usuário não encontrado.");
+  if (!found || found.length === 0) throw new HttpError(404, "User not found.");
 }
 
 /**
- * Sessões, chaves e permissões saem na mesma operação, de forma explícita: o
- * sistema não depende de a remoção em cascata estar ligada no banco (seção 12, item 14).
+ * Sessions, keys and permissions are removed explicitly in the same operation:
+ * the system does not rely on cascading deletes being enabled in the database.
  */
 export async function deleteAccount(ctx: Ctx, role: Role, id: string): Promise<void> {
   const { table, column } = TABLE[role];
@@ -617,11 +621,11 @@ export async function deleteAccount(ctx: Ctx, role: Role, id: string): Promise<v
   if (role === "reader") statements.push(["DELETE FROM permissions WHERE reader_id = ?", id]);
   statements.push([`DELETE FROM ${table} WHERE id = ? RETURNING id`, id]);
   const results = await ctx.db.batch(statements);
-  if ((results.at(-1) ?? []).length === 0) throw new HttpError(404, "Usuário não encontrado.");
+  if ((results.at(-1) ?? []).length === 0) throw new HttpError(404, "User not found.");
 }
 
 // ---------------------------------------------------------------------------
-// Props da plataforma e do leitor
+// Platform and reader props
 // ---------------------------------------------------------------------------
 
 export const PLATFORM_PROPS: Statement = ["SELECT props FROM platform WHERE id = 1"];
@@ -643,7 +647,7 @@ export async function setReaderProps(ctx: Ctx, readerId: string, value: unknown)
 }
 
 // ---------------------------------------------------------------------------
-// Chaves de API
+// API keys
 // ---------------------------------------------------------------------------
 
 export interface ApiKey {
@@ -663,7 +667,7 @@ export function apiKeys(rows: Row[] | undefined): ApiKey[] {
   return (rows ?? []).map(toApiKey);
 }
 
-/** A chave em si aparece só aqui, uma vez: o banco guarda apenas o resumo. */
+/** The key itself appears only here, once: the database stores only its hash. */
 export async function createApiKey(ctx: Ctx, role: Role, ownerId: string): Promise<ApiKey & { key: string }> {
   const key = newApiKey(role);
   const created = { id: randomId(), created_at: Date.now() };
@@ -676,14 +680,14 @@ export async function createApiKey(ctx: Ctx, role: Role, ownerId: string): Promi
 
 export async function deleteApiKey(ctx: Ctx, role: Role, ownerId: string, keyId: string): Promise<void> {
   const removed = await ctx.db.query(`DELETE FROM api_keys WHERE id = ? AND ${TABLE[role].column} = ? RETURNING id`, keyId, ownerId);
-  if (removed.length === 0) throw new HttpError(404, "Chave não encontrada.");
+  if (removed.length === 0) throw new HttpError(404, "Key not found.");
 }
 
 // ---------------------------------------------------------------------------
-// Fontes de um leitor
+// A reader's sources
 // ---------------------------------------------------------------------------
 
-/** As fontes que o leitor pode abrir: as liberadas para ele e todas as públicas. */
+/** The sources the reader can open: those granted to them and every public one. */
 export function readableSourcesQuery(user: UserRef): Statement {
   return [
     `SELECT s.alias, s.public FROM sources s WHERE s.public = 1 OR EXISTS (SELECT 1 FROM permissions p WHERE p.source_alias = s.alias AND p.reader_id = ${user.sql}) ORDER BY s.alias`,

@@ -3,20 +3,22 @@ import { registerApi } from "./api.ts";
 import { type Ctx, MIGRATIONS, cleanup } from "./core.ts";
 import { registerPages } from "./pages.ts";
 
-// Canone: publica e gerencia sites somente leitura. A especificação é o seed.md.
+// Canone: publishes and manages read-only sites.
 //
-//   core.ts      banco, autenticação e as operações de administradores e leitores
-//   view.ts      entrega dos arquivos de sites/ (permissão, props, renderização)
-//   template.ts  engine de templates
-//   pages.ts     páginas /admin, /reader e /root
-//   api.ts       rotas /api/admin, /api/reader e /api/root
+//   core.ts      database, authentication and the administrator and reader operations
+//   view.ts      serving the files of sites/ (permission, props, rendering)
+//   template.ts  template engine
+//   pages.ts     /admin, /reader and /root pages
+//   html.ts      page shells and building blocks; styles.ts is the built-in CSS and script
+//   label.ts     white-label: name, logo and colours read from sites/label/
+//   api.ts       /api/admin, /api/reader and /api/root routes
 export default function main({ server, databases, sites, secrets, cron }: Deps) {
-  // Um único banco, de identificador "canone" (seed.md, seção 10).
+  // A single database, with the identifier "canone".
   const ctx: Ctx = { db: databases.open("canone", MIGRATIONS), sites, secrets };
 
   registerApi(server, ctx);
   registerPages(server, ctx);
 
-  // Limpeza de sessões vencidas e de contagens antigas da senha root, de hora em hora.
+  // Hourly cleanup of expired sessions and old root password attempt counts.
   cron.schedule("17 * * * *", (time) => cleanup(ctx, time));
 }

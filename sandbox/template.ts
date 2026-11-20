@@ -1,18 +1,18 @@
-// Engine de templates do Canone (seed.md, seção 6). Sintaxe no estilo Liquid,
-// interpretada passo a passo: nada aqui gera ou executa código.
+// Canone's template engine. Liquid-style syntax, interpreted step by step:
+// nothing here generates or executes code.
 //
-//   {{ props.site }}                      imprime, escapando HTML
-//   {{ props.html | raw }}                imprime sem escapar
-//   {{ props | json }}                    imprime como JSON, seguro dentro de <script>
+//   {{ props.site }}                      prints, escaping HTML
+//   {{ props.html | raw }}                prints without escaping
+//   {{ props | json }}                    prints as JSON, safe inside <script>
 //   {% if a >= 18 and b %}..{% elsif c %}..{% else %}..{% endif %}
-//   {% for item in props.itens %}..{% else %}..{% endfor %}
-//   {% raw %}..{% endraw %}               trecho que não é interpretado
-//   {% comment %}..{% endcomment %}       trecho descartado
+//   {% for item in props.items %}..{% else %}..{% endfor %}
+//   {% raw %}..{% endraw %}               left as written, not interpreted
+//   {% comment %}..{% endcomment %}       dropped from the output
 
 export class TemplateError extends Error {
   line: number;
   constructor(message: string, line: number) {
-    super(`${message} (linha ${line})`);
+    super(`${message} (line ${line})`);
     this.line = line;
   }
 }
@@ -34,7 +34,7 @@ type Node =
   | { kind: "if"; branches: { test: Expr | null; body: Node[] }[] }
   | { kind: "for"; name: string; list: Expr; body: Node[]; empty: Node[]; line: number };
 
-/** Teto de passos de uma renderização: um laço dentro de outro não pode prender o servidor. */
+/** Step ceiling for one render: a loop inside a loop must not hang the server. */
 const MAX_STEPS = 200_000;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 const MAX_DEPTH = 40;
@@ -54,7 +54,7 @@ export function escapeHtml(value: string): string {
 const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 // ---------------------------------------------------------------------------
-// Leitura do texto
+// Parsing
 // ---------------------------------------------------------------------------
 
 type Piece =
@@ -79,7 +79,7 @@ function scan(source: string): Piece[] {
     text(open);
     const isOutput = source[open + 1] === "{";
     const close = source.indexOf(isOutput ? "}}" : "%}", open + 2);
-    if (close < 0) throw new TemplateError(`"${isOutput ? "{{" : "{%"}" sem fechamento`, line);
+    if (close < 0) throw new TemplateError(`"${isOutput ? "{{" : "{%"}" is never closed`, line);
     const code = source.slice(open + 2, close).trim();
     const startLine = line;
     countLines(open, close + 2);
@@ -93,7 +93,7 @@ function scan(source: string): Piece[] {
       const end = new RegExp(`\\{%\\s*end${name}\\s*%\\}`, "g");
       end.lastIndex = at;
       const found = end.exec(source);
-      if (!found) throw new TemplateError(`"{% ${name} %}" sem "{% end${name} %}"`, startLine);
+      if (!found) throw new TemplateError(`"{% ${name} %}" without "{% end${name} %}"`, startLine);
       if (name === "raw") pieces.push({ kind: "text", text: source.slice(at, found.index) });
       countLines(at, found.index + found[0].length);
       at = found.index + found[0].length;
@@ -117,9 +117,9 @@ function parse(source: string): Node[] {
   const pieces = scan(source);
   let at = 0;
 
-  /** Lê nós até encontrar uma das tags de `until`, que fica para quem chamou. */
+  /** Reads nodes until one of the `until` tags, which is left for the caller. */
   const block = (until: string[], opener: string, line: number, depth: number): Node[] => {
-    if (depth > MAX_DEPTH) throw new TemplateError("blocos aninhados demais", line);
+    if (depth > MAX_DEPTH) throw new TemplateError("blocks nested too deep", line);
     const nodes: Node[] = [];
     while (at < pieces.length) {
       const piece = pieces[at]!;
@@ -140,14 +140,14 @@ function parse(source: string): Node[] {
           branches.push({ test, body });
           const end = pieces[at++] as Extract<Piece, { kind: "tag" }>;
           if (end.name === "endif") break;
-          if (test === null) throw new TemplateError(`"{% ${end.name} %}" depois de "{% else %}"`, end.line);
+          if (test === null) throw new TemplateError(`"{% ${end.name} %}" after "{% else %}"`, end.line);
           test = end.name === "elsif" ? parseExpression(end.rest, end.line) : null;
         }
         nodes.push({ kind: "if", branches });
       } else if (piece.name === "for") {
         at++;
         const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+)$/s.exec(piece.rest);
-        if (!match) throw new TemplateError('laço inválido: use "{% for item in lista %}"', piece.line);
+        if (!match) throw new TemplateError('invalid loop: use "{% for item in list %}"', piece.line);
         const list = parseExpression(match[2]!, piece.line);
         const body = block(["else", "endfor"], "for", piece.line, depth + 1);
         let empty: Node[] = [];
@@ -157,10 +157,10 @@ function parse(source: string): Node[] {
         }
         nodes.push({ kind: "for", name: match[1]!, list, body, empty, line: piece.line });
       } else {
-        throw new TemplateError(`tag desconhecida ou fora de lugar: "{% ${piece.name || piece.rest} %}"`, piece.line);
+        throw new TemplateError(`unknown or misplaced tag: "{% ${piece.name || piece.rest} %}"`, piece.line);
       }
     }
-    if (until.length > 0) throw new TemplateError(`"{% ${opener} %}" sem "{% end${opener} %}"`, line);
+    if (until.length > 0) throw new TemplateError(`"{% ${opener} %}" without "{% end${opener} %}"`, line);
     return nodes;
   };
 
@@ -168,7 +168,7 @@ function parse(source: string): Node[] {
 }
 
 // ---------------------------------------------------------------------------
-// Expressões
+// Expressions
 // ---------------------------------------------------------------------------
 
 type Token = { type: "name" | "string" | "number" | "op"; value: string };
@@ -183,7 +183,7 @@ function tokenize(code: string, line: number): Token[] {
     if (code.slice(at).trim() === "") break;
     TOKEN.lastIndex = at;
     const match = TOKEN.exec(code);
-    if (!match) throw new TemplateError(`expressão inválida: "${code}"`, line);
+    if (!match) throw new TemplateError(`invalid expression: "${code}"`, line);
     at = TOKEN.lastIndex;
     if (match[1] !== undefined) tokens.push({ type: "string", value: match[1].slice(1, -1).replace(/\\(.)/g, "$1") });
     else if (match[2] !== undefined) tokens.push({ type: "number", value: match[2] });
@@ -208,7 +208,7 @@ class ExpressionParser {
   }
 
   fail(): never {
-    throw new TemplateError(`expressão inválida: "${this.#code}"`, this.#line);
+    throw new TemplateError(`invalid expression: "${this.#code}"`, this.#line);
   }
 
   peek(): Token | undefined {
@@ -305,7 +305,7 @@ function parseOutput(code: string, line: number): Node {
   while (parser.take("op", "|")) {
     const name = parser.peek();
     if (!name || name.type !== "name" || !FILTERS.has(name.value)) {
-      throw new TemplateError(`filtro desconhecido em "{{ ${code} }}". Existem: ${[...FILTERS].join(", ")}`, line);
+      throw new TemplateError(`unknown filter in "{{ ${code} }}". Available: ${[...FILTERS].join(", ")}`, line);
     }
     parser.take("name", name.value);
     const args: Expr[] = [];
@@ -320,7 +320,7 @@ function parseOutput(code: string, line: number): Node {
 }
 
 // ---------------------------------------------------------------------------
-// Execução
+// Execution
 // ---------------------------------------------------------------------------
 
 type Scopes = Record<string, unknown>[];
@@ -331,7 +331,7 @@ interface State {
 
 function run(nodes: Node[], scopes: Scopes, out: string[], state: State): void {
   for (const node of nodes) {
-    if (++state.steps > MAX_STEPS) throw new TemplateError("o template passou do limite de passos (laço grande demais?)", 0);
+    if (++state.steps > MAX_STEPS) throw new TemplateError("the template exceeded the step limit (a loop that is too large?)", 0);
     if (node.kind === "text") {
       emit(node.text, out, state);
     } else if (node.kind === "output") {
@@ -355,7 +355,7 @@ function run(nodes: Node[], scopes: Scopes, out: string[], state: State): void {
 
 function emit(text: string, out: string[], state: State): void {
   state.size += text.length;
-  if (state.size > MAX_OUTPUT) throw new TemplateError("a página renderizada passou do tamanho máximo", 0);
+  if (state.size > MAX_OUTPUT) throw new TemplateError("the rendered page exceeded the maximum size", 0);
   out.push(text);
 }
 
@@ -365,7 +365,7 @@ function output(node: Extract<Node, { kind: "output" }>, scopes: Scopes): string
   for (const filter of node.filters) {
     if (filter.name === "raw") escape = false;
     else if (filter.name === "json") {
-      // "<" escapado: o resultado pode ficar dentro de <script> sem fechar a tag.
+      // "<" is escaped: the result can sit inside <script> without closing the tag.
       value = (JSON.stringify(value ?? null) ?? "null").replace(/</g, "\\u003c");
       escape = false;
     } else if (filter.name === "upper") value = text(value).toUpperCase();
@@ -400,7 +400,7 @@ function toList(value: unknown): unknown[] {
   return [];
 }
 
-/** Só propriedades próprias de objetos e listas: nunca protótipos, nunca funções. */
+/** Own properties of objects and arrays only: never prototypes, never functions. */
 function member(target: unknown, key: unknown): unknown {
   if (target === null || target === undefined) return undefined;
   if (Array.isArray(target)) {
@@ -456,7 +456,7 @@ function same(left: unknown, right: unknown): boolean {
   return a !== undefined && a === b;
 }
 
-/** Números comparam com números; um texto numérico (query, cabeçalho) vira número diante de um número. */
+/** Numbers compare with numbers; a numeric string (query, header) becomes a number when compared with one. */
 function comparable(left: unknown, right: unknown): [number, number] | [string, string] | [boolean, boolean] | [undefined, undefined] {
   if (typeof left === "number" && typeof right === "number") return [left, right];
   if (typeof left === "string" && typeof right === "string") return [left, right];

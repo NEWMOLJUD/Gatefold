@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ props.title | default: "Canone example" }}</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img src="img/logo.svg" alt="" width="48" height="48">
+      <h1>{{ props.title | default: "Canone example" }}</h1>
+    </header>
+    <p>This page is the file <code>sites/example/index.html</code> of the repository. It is delivered at
+      <code>/reader/view/example/</code> once an administrator registers the source <code>example</code>.</p>
+
+    <h2>Props</h2>
+    <p>Whatever sits between double braces is replaced on the server by the props (platform &lt; source &lt; reader).</p>
+    {% if props.theme == "dark" %}
+      <p class="notice">You chose the <strong>dark</strong> theme in your props.</p>
+    {% else %}
+      <p class="notice">Set <code>{"theme": "dark"}</code> in the props to see this sentence change.</p>
+    {% endif %}
+
+    {% for item in props.notices %}
+      <p class="notice">{{ forloop.index }}. {{ item }}</p>
+    {% else %}
+      <p class="muted">No notices: put a list under <code>notices</code> in the props.</p>
+    {% endfor %}
+
+    <h2>Request</h2>
+    <p>Page asked in the query (<code>?page=</code>): {{ query.page | default: "none" }}</p>
+    <p>Browser language: {{ headers.accept-language | default: "not sent" }}</p>
+
+    <h2>Raw block</h2>
+    <p>{% raw %}Inside a raw block, {{ this }} and {% this %} appear exactly as written.{% endraw %}</p>
+
+    <p><a href="about/">Another page of this source</a></p>
+  </main>
+</body>
+</html>

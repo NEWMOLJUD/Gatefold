@@ -1,0 +1,14 @@
+/* This file does not go through the template engine: only "html" is rendered by default. */
+:root { color-scheme: light dark; --ink: #111827; --muted: #5b6474; --bg: #f4f6fa; --card: #fff; --line: #e2e6ee; --accent: #2f5bea; }
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #e8ecf4; --muted: #9aa6ba; --bg: #0d121c; --card: #161d2b; --line: #283246; --accent: #7c9bff; }
+}
+body { margin: 0; font: 17px/1.65 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+main { max-width: 680px; margin: 0 auto; padding: 48px 20px 72px; }
+header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
+h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; }
+h2 { margin: 36px 0 8px; font-size: 19px; }
+a { color: var(--accent); }
+code { background: var(--card); border: 1px solid var(--line); padding: 1px 6px; border-radius: 5px; font-size: .9em; }
+.notice { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 6px; padding: 10px 14px; margin: 10px 0; }
+.muted { color: var(--muted); }

@@ -1,5 +1,5 @@
-// Script da página /root/setup. A senha root fica só na memória desta aba e
-// segue em cada chamada à API; nada é gravado no navegador.
+// Script of the /root/setup page. The root password stays only in the memory
+// of this tab and goes along with each API call; nothing is stored in the browser.
 export const ROOT_SCRIPT = String.raw`"use strict";
 (function () {
   var password = "";
@@ -10,7 +10,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
 
   function say(text, kind) {
     message.textContent = text;
-    message.className = "note " + (kind || "");
+    message.className = "alert alert-" + (kind || "info");
     message.hidden = !text;
   }
 
@@ -22,7 +22,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
     }).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (data) {
         if (response.ok) return data;
-        var error = new Error(data.error || "Erro " + response.status);
+        var error = new Error(data.error || "Error " + response.status);
         error.status = response.status;
         throw error;
       });
@@ -30,7 +30,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
   }
 
   function failed(error) {
-    say(error.message, "bad");
+    say(error.message, "danger");
     if (error.status === 401 || error.status === 429) {
       panel.hidden = true;
       if (error.status === 401) ask.showModal();
@@ -53,18 +53,19 @@ export const ROOT_SCRIPT = String.raw`"use strict";
         cell(row, admin.username);
         cell(row, new Date(admin.created_at).toISOString().slice(0, 16).replace("T", " "));
         var button = document.createElement("button");
-        button.className = "danger";
-        button.textContent = "Remover";
+        button.className = "btn btn-danger btn-sm";
+        button.textContent = "Remove";
         button.addEventListener("click", function () {
-          if (!confirm("Remover o administrador " + admin.username + "?")) return;
+          if (!confirm("Remove the administrator " + admin.username + "?")) return;
           call("DELETE", "/api/root/admins/" + encodeURIComponent(admin.id))
-            .then(function () { say("Administrador removido.", "ok"); return load(); })
+            .then(function () { say("Administrator removed.", "ok"); return load(); })
             .catch(failed);
         });
-        cell(row, "").appendChild(button);
+        cell(row, "").className = "end";
+        row.lastChild.appendChild(button);
         table.appendChild(row);
       });
-      if (data.items.length === 0) cell(table.appendChild(document.createElement("tr")), "Nenhum administrador ainda.");
+      if (data.items.length === 0) cell(table.appendChild(document.createElement("tr")), "No administrators yet. Create the first one above.");
     });
   }
 
@@ -84,7 +85,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
       .then(function () {
         username.value = "";
         secret.value = "";
-        say("Administrador criado. Ele já pode entrar em /admin/.", "ok");
+        say("Administrator created. They can now sign in at /admin/.", "ok");
         return load();
       })
       .catch(failed);

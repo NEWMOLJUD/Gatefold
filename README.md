@@ -42,57 +42,155 @@ A TypeScript template for Cloudflare Workers and Linux, built to be driven by AI
 <!-- redoma:project -->
 ## Canone
 
-Canone publica e gerencia sites **somente leitura**. Cada subpasta de `sites/` é uma fonte; o sistema decide quem pode ler cada uma e renderiza os arquivos no servidor com props configuráveis. A especificação completa está em [`seed.md`](seed.md).
+**Publish private, read-only sites to the right people, under your own brand.**
 
-### Começar uma instalação
+Put a static site in a folder, commit it, and Canone serves it behind a sign-in: you decide which readers open which site. It is a white-label template: your logo, name and colours live in one folder, and all data lives in a single SQLite database. No buckets, no external services.
 
-1. No GitHub, clique em **Use this template** e crie o seu repositório. **Escolha "Private"**: quem lê o repositório lê todas as fontes, inclusive as privadas.
-2. Coloque os seus sites em `sites/`, uma subpasta por site (nome com letras minúsculas, números e hífen). A pasta `sites/exemplo/` é só um ponto de partida.
-3. Defina os três segredos abaixo e publique.
-4. Abra `/root/setup`, informe a senha root e crie o primeiro administrador. Depois entre em `/admin/` e cadastre as fontes e os leitores.
+<p align="center">
+  <img src="docs/admin.png" alt="The administrator console: overview with sources, readers and administrators" width="49%">
+  <img src="docs/reader.png" alt="The reader library: one card per source the reader can open" width="49%">
+</p>
 
-### Segredos
+- **One folder per site.** `sites/handbook/` is served at `/reader/view/handbook/`. Plain HTML, CSS, images, PDFs.
+- **Access per reader.** A source is private (only the readers you pick) or public (anyone).
+- **Server-side templates.** `{{ props.title }}`, `{% if %}`, `{% for %}`: pages adapt to the platform, the source and the reader.
+- **White-label.** Logo, name and palette in `sites/label/`. No code to touch.
+- **Everything has an API.** Whatever the console does, a script can do with an API key.
+- **One SQLite database.** Accounts, permissions, sessions and settings; created on first use.
 
-| Nome | Uso |
-|---|---|
-| `CANONE_ROOT_PASSWORD` | Senha root: libera `/root/setup`. |
-| `CANONE_MASTER_KEY` | Chave mestra: entra no resumo das senhas e das chaves de API. Guarde uma cópia: se ela mudar, todas as senhas e chaves deixam de valer. |
-| `CANONE_SIGNING_KEY` | Assina os tokens de login. Trocá-la encerra todas as sessões. |
+### Get it running in 5 steps
 
-Use valores longos e aleatórios, diferentes entre si. Na sua máquina: `npm run secret set NOME`. Publicando pelo Git conectado à Cloudflare, cadastre os três também no painel: Workers & Pages → o Worker → Settings → Variables and Secrets → Add, tipo "Secret".
+You need [Node.js](https://nodejs.org) 22.18 or newer and a terminal.
 
-### Endereços
+**1. Create your repository.** On GitHub press **Use this template** and choose **Private**.
 
-| Endereço | O que é |
-|---|---|
-| `/root/setup` | Cria e remove administradores com a senha root. |
-| `/admin/` | Login e painel do administrador. |
-| `/reader/` | Login e início do leitor. |
-| `/reader/view/<alias>/<arquivo>` | Entrega `sites/<alias>/<arquivo>`. |
-| `/api/admin/*`, `/api/reader/*` | Tudo o que as páginas fazem, em JSON (`sandbox/api.ts` lista as rotas). Chave no cabeçalho `Authorization: Bearer <chave>`. |
+> [!WARNING]
+> Whoever can read the repository can read every site in it, including the private ones. Keep the repository private.
 
-### Templates
+**2. Install and name it.** Clone the repository, then:
 
-Os arquivos cujas extensões estão na lista `render` da fonte (padrão: `html`) passam pela engine:
-
-```html
-<h1>{{ props.site }}</h1>
-{% if props.age >= 18 %}…{% elsif query.page == 2 %}…{% else %}…{% endif %}
-{% for item in props.itens %}{{ forloop.index }}. {{ item }}{% else %}lista vazia{% endfor %}
-{% raw %}{{ isto não é interpretado }}{% endraw %}
+```bash
+npm install
 ```
 
-Variáveis: `props` (plataforma < fonte < leitor), `query` e `headers` (sem `cookie` nem `authorization`). Tudo é escapado ao ser impresso; os filtros são `raw` (sem escape), `json`, `default: "valor"`, `upper`, `lower` e `size`.
+```bash
+npm run rename my-company-docs
+```
 
-### Decisões tomadas para os itens em aberto do seed (seção 13)
+**3. Set the three secrets.** Each command asks for the value at a hidden prompt. Use long random values, different from each other (a password manager can generate them).
 
-- **Leitura de `sites/`:** o motor ganhou a capacidade somente leitura `deps.sites` (`deps/sites.ts`). A pasta é publicada junto com o app e nunca é entregue direto. Limites da Cloudflare: 20.000 arquivos, 25 MB cada. `sites/` e `sandbox/public/` não podem coexistir.
-- **Sessão:** vale 7 dias. O leitor não troca a própria senha; o administrador troca.
-- **Senha root:** 5 tentativas erradas por hora, somando todos os visitantes.
-- **Endereço que termina em pasta:** entrega o `index.html` dela. Arquivo inexistente: 404.
-- **Tamanhos:** JSON de props até 64 mil caracteres; arquivos acima de 1 MB são entregues sem renderizar.
-- **Subpasta que sumiu:** o cadastro continua, aparece como "pasta ausente" nas telas do administrador e responde 404.
-- **Filtros das listagens:** começo do nome, intervalo de criação, fonte (leitores) e mínimo de leitores (fontes), 50 itens por página.
+```bash
+npm run secret set CANONE_ROOT_PASSWORD
+```
+
+```bash
+npm run secret set CANONE_MASTER_KEY
+```
+
+```bash
+npm run secret set CANONE_SIGNING_KEY
+```
+
+| Secret | What it is for | If you change it later |
+|---|---|---|
+| `CANONE_ROOT_PASSWORD` | Opens `/root/setup`, where administrators are created and recovered. | Nothing breaks. |
+| `CANONE_MASTER_KEY` | Mixed into every password and API key hash. **Keep a copy.** | Every password and API key stops working. |
+| `CANONE_SIGNING_KEY` | Signs the session cookies. | Everyone is signed out. |
+
+**4. Start it.**
+
+```bash
+npm run dev
+```
+
+**5. Create the first administrator.** Open the address it printed, then:
+
+1. Go to `/root/setup`, type the root password and create an administrator.
+2. Sign in at `/admin/`.
+3. **Sources → Register source** and pick `example`.
+4. **Readers → Add reader**, then tick `example` for that reader.
+5. Sign in as the reader at `/reader/`. The example site is in the library.
+
+That is the whole flow. Now make it yours.
+
+### Add your own sites
+
+Copy each site into its own folder under `sites/` (lowercase letters, digits and hyphens), commit and publish:
+
+```
+sites/
+  handbook/        →  /reader/view/handbook/
+    index.html
+    style.css
+  price-list/      →  /reader/view/price-list/
+  label/           →  your brand (not a site)
+```
+
+A folder is invisible until an administrator registers it under **Sources**. Delete `sites/example/` when you no longer need it. Links between pages of a site should be relative (`about/`, `../style.css`).
+
+### Make it your brand
+
+Everything visual about your company is in [`sites/label/`](sites/label/README.md):
+
+| File | Change it to |
+|---|---|
+| `label.json` | Your product name, tagline and footer. |
+| `logo.svg`, `favicon.svg` | Your logo (SVG, PNG, JPG or WebP). |
+| `style.css` | Your colours: four `--brand…` values, for light and dark mode. |
+
+The sign-in page, the administrator console and the reader library follow these files. The sites you publish keep their own look.
+
+### Publish
+
+Follow [step 5 of the manual below](#5-publish-to-cloudflare) (Cloudflare) or [step 8](#8-run-it-on-your-own-linux-server) (your own Linux server). Either way, **the three secrets must also be set where the app runs**:
+
+- Publishing from your terminal with `npm run deploy`: `npm run secret set NAME` already sent them.
+- Publishing through Git connected to Cloudflare: add them in the dashboard, **Workers & Pages → your Worker → Settings → Variables and Secrets → Add**, type **Secret**.
+- A Linux server: run `npm run secret set NAME` on the server.
+
+Sites are part of the publication: to add or change one, commit and publish again.
+
+### Addresses
+
+| Address | What it is |
+|---|---|
+| `/reader/` | Reader sign-in and library. |
+| `/reader/view/<alias>/<file>` | Delivers `sites/<alias>/<file>`. A folder address delivers its `index.html`. |
+| `/admin/` | Administrator sign-in and console. |
+| `/root/setup` | Creates and removes administrators with the root password. |
+| `/api/admin/*`, `/api/reader/*` | The same operations in JSON. Send an API key as `Authorization: Bearer <key>`. The routes are listed in [`sandbox/api.ts`](sandbox/api.ts). |
+| `/label/<file>` | Your logo and colours. Public. |
+
+### Templates and props
+
+Files whose extension is in the source's *rendered extensions* (default: `html`) go through the template engine before delivery:
+
+```html
+<h1>{{ props.company }}</h1>
+{% if props.plan == "gold" %}…{% elsif query.page == 2 %}…{% else %}…{% endif %}
+{% for item in props.notices %}{{ forloop.index }}. {{ item }}{% else %}Nothing new.{% endfor %}
+{% raw %}{{ this is not interpreted }}{% endraw %}
+```
+
+- **`props`** are JSON objects merged in this order, the later winning: platform (all sources) → source → reader.
+- **`query`** is the address query string and **`headers`** the request headers (never cookies or credentials).
+- Output is HTML-escaped. Filters: `raw` (no escaping), `json`, `default: "value"`, `upper`, `lower`, `size`.
+
+> [!IMPORTANT]
+> Props personalise pages. They are **not** access control: a reader can set any key in their own preferences. Access is decided only by the source's visibility and the reader's permissions.
+
+### Good to know
+
+- **Storage:** one SQLite database (`canone`). On your computer and on Linux it is inside `.data/`: that folder is your backup. No bucket is used.
+- **Sessions** last 7 days. Readers cannot change their own password; an administrator does it.
+- **Root password:** 5 wrong attempts per hour, counted across all visitors, then it locks until the next hour.
+- **Limits:** props up to 64,000 characters; files over 1 MB are delivered without rendering; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
+- **A folder removed from `sites/`** keeps its settings, shows as "Folder missing" in the console and answers 404.
+- **`sites/` and `sandbox/public/` cannot coexist**, and `label` cannot be the name of a site.
+
+### Contributing
+
+Issues and pull requests are welcome. The app is in `sandbox/` (TypeScript, no dependencies); run `npm run test` before sending a change. The rest of this file is the manual of [Redoma](https://github.com/MateusMoutinhoOrg/Redoma), the template Canone is built on: it covers every command in detail.
 <!-- /redoma:project -->
 
 ## Quickstart

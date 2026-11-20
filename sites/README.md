@@ -1,12 +1,13 @@
 # sites/
 
-Cada subpasta direta desta pasta é uma **fonte** do Canone, e o nome da subpasta é o alias da URL:
+Each direct subfolder of this folder is a **source**, and the folder name is its alias in the address:
 
 ```
-sites/<alias>/<arquivo>   →   /reader/view/<alias>/<arquivo>
+sites/<alias>/<file>   →   /reader/view/<alias>/<file>
 ```
 
-- Use só letras minúsculas, números e hífen no nome da subpasta.
-- Uma subpasta só fica legível depois que um administrador a cadastra em `/admin/create-source`.
-- `exemplo/` é só um ponto de partida: apague ou troque pelo seu conteúdo.
-- Arquivos e pastas cujo nome começa com ponto nunca são entregues.
+- Name the subfolder with lowercase letters, digits and hyphens only.
+- A subfolder becomes readable only after an administrator registers it at `/admin/create-source`.
+- `example/` is just a starting point: delete it or replace it with your content.
+- Files and folders whose name starts with a dot are never delivered.
+- `label/` is not a source: it holds your logo and colours. See [`label/README.md`](label/README.md).

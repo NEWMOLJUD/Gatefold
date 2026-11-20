@@ -1,14 +1,14 @@
-// Resumos de senha e de chave de API, tokens de sessão e cookies (seed.md, seção 9).
-// Só usa a Web Crypto: nenhuma dependência.
+// Password and API key hashes, session tokens and cookies.
+// Web Crypto only: no dependencies.
 
 const encoder = new TextEncoder();
 
-/** Nomes dos segredos do ambiente. Os valores só o dono da instalação define. */
+/** Names of the environment secrets. Only the owner of the installation sets their values. */
 export const SECRET_ROOT = "CANONE_ROOT_PASSWORD";
 export const SECRET_MASTER = "CANONE_MASTER_KEY";
 export const SECRET_SIGNING = "CANONE_SIGNING_KEY";
 
-/** Voltas do PBKDF2. Fica gravado em cada resumo, então pode subir sem invalidar senhas antigas. */
+/** PBKDF2 rounds. Stored in each hash, so it can be raised without invalidating old passwords. */
 const PASSWORD_ROUNDS = 50_000;
 
 export function base64url(bytes: ArrayBuffer | Uint8Array): string {
@@ -25,7 +25,7 @@ function fromBase64url(text: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/** Identificador aleatório, impossível de adivinhar (seção 10, convenções). */
+/** Random identifier, impossible to guess. */
 export function randomId(bytes = 16): string {
   return base64url(crypto.getRandomValues(new Uint8Array(bytes)));
 }
@@ -35,7 +35,7 @@ async function hmac(key: string, data: string | Uint8Array<ArrayBuffer>): Promis
   return crypto.subtle.sign("HMAC", imported, typeof data === "string" ? encoder.encode(data) : data);
 }
 
-/** Compara sem revelar, pelo tempo gasto, em que ponto os textos diferem. */
+/** Compares without revealing, through timing, where the strings differ. */
 export async function safeEqual(left: string, right: string): Promise<boolean> {
   const key = randomId();
   const a = new Uint8Array(await hmac(key, left));
@@ -46,7 +46,7 @@ export async function safeEqual(left: string, right: string): Promise<boolean> {
 }
 
 async function stretch(masterKey: string, password: string, salt: Uint8Array<ArrayBuffer>, rounds: number): Promise<string> {
-  // A chave mestra entra antes do PBKDF2: sem ela, o banco sozinho não permite testar senhas.
+  // The master key goes in before PBKDF2: without it, the database alone is not enough to test passwords.
   const peppered = await hmac(masterKey, `password:${password}`);
   const material = await crypto.subtle.importKey("raw", peppered, "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: rounds }, material, 256);
@@ -59,8 +59,8 @@ export async function hashPassword(masterKey: string, password: string): Promise
 }
 
 /**
- * Confere a senha. Com `stored` nulo (usuário inexistente) faz o mesmo trabalho
- * e recusa, para que o tempo de resposta não revele quais usuários existem.
+ * Checks the password. With a null `stored` (no such user) it does the same
+ * work and refuses, so the response time does not reveal which users exist.
  */
 export async function verifyPassword(masterKey: string, password: string, stored: string | null): Promise<boolean> {
   const [scheme, rounds, salt, hash] = (stored ?? "").split("$");
@@ -71,29 +71,29 @@ export async function verifyPassword(masterKey: string, password: string, stored
   return safeEqual(await stretch(masterKey, password, fromBase64url(salt), Number(rounds)), hash);
 }
 
-/** Chave de API nova. O prefixo diz de quem é: `cn_a_` administrador, `cn_r_` leitor. */
+/** A new API key. The prefix says whose it is: `cn_a_` administrator, `cn_r_` reader. */
 export function newApiKey(role: Role): string {
   return `cn_${role === "admin" ? "a" : "r"}_${randomId(32)}`;
 }
 
-/** A chave já é aleatória e longa: um HMAC com a chave mestra basta, e permite procurar por ele. */
+/** The key is already long and random: an HMAC with the master key is enough, and can be looked up. */
 export async function hashApiKey(masterKey: string, key: string): Promise<string> {
   return base64url(await hmac(masterKey, `api-key:${key}`));
 }
 
 // ---------------------------------------------------------------------------
-// Token de sessão (JWT, HS256)
+// Session token (JWT, HS256)
 // ---------------------------------------------------------------------------
 
 export type Role = "admin" | "reader";
 
 export interface Claims {
-  /** Identificador da sessão no banco. */
+  /** Session identifier in the database. */
   sid: string;
-  /** Identificador do usuário. */
+  /** User identifier. */
   sub: string;
   role: Role;
-  /** Validade, em segundos desde 1970 (padrão do JWT). */
+  /** Expiry, in seconds since 1970 (the JWT standard). */
   exp: number;
 }
 
@@ -104,7 +104,7 @@ export async function signToken(signingKey: string, claims: Claims): Promise<str
   return `${body}.${base64url(await hmac(signingKey, body))}`;
 }
 
-/** As informações do token, ou `null` se a assinatura, o formato ou a validade não conferem. */
+/** The token's claims, or `null` if the signature, the format or the expiry does not check out. */
 export async function verifyToken(signingKey: string, token: string, now: number): Promise<Claims | null> {
   const parts = token.split(".");
   if (parts.length !== 3 || parts[0] !== JWT_HEADER) return null;
@@ -124,7 +124,7 @@ export async function verifyToken(signingKey: string, token: string, now: number
 // Cookies
 // ---------------------------------------------------------------------------
 
-/** Um cookie por papel: a mesma pessoa pode estar logada como administrador e como leitor. */
+/** One cookie per role: the same person can be signed in as administrator and as reader. */
 export function cookieName(role: Role): string {
   return role === "admin" ? "canone_admin" : "canone_reader";
 }
@@ -137,7 +137,7 @@ export function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-/** `Lax`: outro site não consegue enviar formulários com o cookie, mas um link para uma fonte privada funciona. */
+/** `Lax`: another site cannot submit forms with the cookie, but a link to a private source still works. */
 export function sessionCookie(role: Role, token: string, maxAgeSeconds: number): string {
   return `${cookieName(role)}=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Lax`;
 }
@@ -147,8 +147,8 @@ export function clearCookie(role: Role): string {
 }
 
 /**
- * Proteção contra requisições forjadas por outro site (seção 12, item 9): uma
- * alteração feita com cookie só vale se o navegador disser que partiu deste site.
+ * Protection against requests forged by another site (CSRF): a change made
+ * with a cookie only counts if the browser says it came from this site.
  */
 export function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
