@@ -8,6 +8,22 @@ Os arquivos dos sites ficam em uma única pasta do próprio repositório, `sites
 
 Publicar ou alterar conteúdo é enviar os arquivos ao repositório e publicar o sistema de novo. Nada é editado pela tela.
 
+### O projeto é um template
+
+Canone é distribuído como um **template de repositório**, do mesmo jeito que o Redoma. Ninguém usa este repositório diretamente:
+
+1. Quem quer um Canone clica em "Use this template" no GitHub e cria o próprio repositório a partir deste.
+2. Coloca os arquivos dos seus sites na pasta `sites/` do repositório criado.
+3. Define os segredos (seção 9) e publica.
+
+Cada repositório criado assim é uma **instalação** independente: tem a própria pasta `sites/`, o próprio banco, os próprios segredos, administradores e leitores. Uma instalação não enxerga a outra.
+
+Consequências para o que este repositório contém:
+
+- A pasta `sites/` do template traz apenas um exemplo pequeno e público, que serve de ponto de partida. Nenhum conteúdo real fica aqui.
+- Nada no código ou na especificação pode depender de um nome, endereço ou conta específicos: o que varia entre instalações fica nos segredos, no banco ou na pasta `sites/`.
+- O banco de uma instalação nova nasce vazio. O primeiro administrador é criado em `/root/setup` (seção 3).
+
 ### Princípios
 
 - **Somente leitura.** Leitores nunca alteram o conteúdo das fontes.
@@ -533,10 +549,12 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 14. **Remoção em cascata.** O esquema conta com o banco para apagar sessões, chaves e permissões quando o dono é removido. Um teste deve confirmar que isso está ativo no ambiente de publicação; se não estiver, as remoções devem apagar esses dados explicitamente, na mesma operação. Sem isso, um leitor removido continuaria com sessão válida.
 15. **Limite de tentativas da senha root é global.** A contagem não separa por visitante, porque um atacante troca de endereço com facilidade. Isso protege a senha, mas permite que alguém bloqueie `/root/setup` por até uma hora só errando de propósito.
 16. **Os arquivos não podem ser entregues direto.** Todo arquivo de `sites/` precisa passar pelo sistema antes de chegar ao visitante. Se a pasta for servida como arquivos estáticos comuns, as fontes privadas ficam abertas a qualquer pessoa e os templates aparecem sem renderizar.
-17. **Conteúdo privado dentro do repositório.** Quem consegue ler o repositório lê todas as fontes, inclusive as privadas. O repositório precisa ser privado, e o acesso a ele passa a valer como acesso a todo o conteúdo.
+17. **Conteúdo privado dentro do repositório.** Quem consegue ler o repositório lê todas as fontes, inclusive as privadas. O repositório de cada instalação precisa ser privado, e o acesso a ele passa a valer como acesso a todo o conteúdo. O GitHub pergunta a visibilidade ao criar um repositório a partir do template: as instruções de início devem mandar escolher "privado". O repositório do template, ao contrário, é aberto, e por isso nunca recebe conteúdo real.
 18. **Publicar conteúdo é publicar o sistema.** Qualquer mudança em um arquivo exige novo envio ao repositório e nova publicação. Um erro no conteúdo e um erro no sistema saem juntos e voltam atrás juntos.
 19. **Tamanho da pasta.** A pasta entra na publicação, que tem limites de quantidade e de tamanho de arquivos. Vídeos e outros arquivos grandes não cabem bem (seção 13).
 20. **Subpasta renomeada ou removida.** Renomear uma subpasta troca o alias: a configuração e as permissões antigas continuam no banco, apontando para uma pasta que não existe mais, e a pasta nova nasce sem cadastro. Os links antigos param de funcionar.
+21. **Instalações não recebem melhorias sozinhas.** Um repositório criado por "Use this template" é uma cópia sem ligação com o original: correções feitas no template, inclusive de segurança, não chegam às instalações já criadas. É preciso um procedimento de atualização que troque o código e nunca toque na pasta `sites/` nem no banco (seção 13).
+22. **Mudanças no esquema chegam a bancos já em uso.** Cada instalação tem um banco com dados reais. Toda mudança de esquema no template precisa funcionar sobre esses bancos, e por isso só entra como instrução nova no fim do histórico (seção 10).
 
 ## 13. Em aberto
 
@@ -545,6 +563,8 @@ Itens que o texto original não define:
 - **Como o sistema lê a pasta `sites/`.** O modelo do projeto hoje não oferece ao sistema um jeito de ler arquivos de uma pasta do repositório: a única pasta de arquivos que ele conhece é entregue direto ao visitante, sem login e sem templates (seção 12, item 16). Antes de implementar, o modelo precisa ganhar uma leitura, somente leitura, dessa pasta.
 - Limites de quantidade e de tamanho de arquivos da publicação, a confirmar na Cloudflare (seção 12, item 19).
 - O que fazer com cadastros cuja subpasta sumiu: avisar o administrador, esconder ou apagar (seção 12, item 20).
+- Como uma instalação recebe as atualizações do template (seção 12, item 21). O Redoma já tem um comando de atualização; falta definir se ele serve como está e garantir que preserve `sites/`.
+- O que o exemplo da pasta `sites/` do template deve conter.
 - Validade da sessão e como o leitor troca a própria senha.
 - O que entregar quando a URL termina em pasta (sugestão: `index.html`) e quando o arquivo não existe.
 - Limite de tamanho do JSON de props e dos arquivos renderizados.
