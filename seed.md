@@ -273,9 +273,26 @@ Todas as páginas do administrador exibem o botão "Sair".
 
 - O login (`/admin/` e `/reader/`) devolve um **token JWT** gravado em **cookie**.
 - O cookie é `HttpOnly`, `Secure` e `SameSite`, para que scripts das páginas não consigam lê-lo e outros sites não consigam usá-lo.
-- O token carrega o identificador do usuário, o papel (administrador ou leitor) e a validade.
-- A cada requisição o sistema confere a assinatura e a validade do token, e se o usuário ainda existe.
-- **Logout:** `/reader/logout` e `/admin/logout` apagam o cookie e levam à página de login. Só aceitam envio de formulário (POST), para que um link em outro site não deslogue o usuário. As chaves de API não são afetadas.
+- Cada login cria um registro de **sessão** no banco. O token carrega o identificador dessa sessão, o do usuário, o papel (administrador ou leitor) e a validade.
+- A cada requisição o sistema confere a assinatura e a validade do token e se a sessão ainda existe no banco. Sessão apagada significa token recusado, mesmo que ainda não tenha expirado.
+- Remover um usuário ou trocar sua senha apaga todas as sessões dele.
+- **Logout:** `/reader/logout` e `/admin/logout` apagam a sessão no banco e o cookie, e levam à página de login. O token deixa de valer na hora, em qualquer lugar onde tenha sido copiado. Só aceitam envio de formulário (POST), para que um link em outro site não deslogue o usuário. As chaves de API não são afetadas.
+
+### Armazenamento
+
+Todos os dados do sistema ficam em banco **SQLite**:
+
+| Dado | Conteúdo |
+|---|---|
+| Administradores | Usuário e resumo da senha. |
+| Leitores | Usuário, resumo da senha e props do leitor. |
+| Fontes | Campos da seção 4, com as credenciais cifradas. |
+| Permissões | Quais leitores podem ler quais fontes. |
+| Props da plataforma | O JSON geral do sistema. |
+| Sessões | Sessões de login ativas, com usuário, papel e validade. |
+| Chaves de API | Resumo da chave, dono e data de criação. |
+
+Os arquivos dos sites nunca são copiados para o banco: continuam nos buckets.
 
 ### Segredos do ambiente
 
@@ -323,7 +340,7 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 6. **`/root/setup` é pública.** Precisa de limite de tentativas para a senha root.
 7. **Credenciais de provedores externos.** Diferente do R2, fontes em AWS, Google Cloud e similares obrigam o sistema a guardar chaves de terceiros. Se o banco vazar, essas chaves vazam junto, por isso ficam cifradas com a chave mestra, mantida fora do banco. Qualquer administrador passa a poder cadastrar e trocar essas chaves, então elas devem ser sempre somente leitura e restritas ao bucket.
 8. **Perda ou troca da chave mestra.** Se a chave mestra for perdida ou alterada, todas as credenciais de provedores ficam ilegíveis e todas as senhas e chaves de API deixam de valer. É preciso guardar uma cópia segura dela e prever um procedimento de troca.
-9. **Token JWT não se cancela sozinho.** Um token continua válido até expirar. Conferir a cada requisição se o usuário ainda existe resolve a remoção de um leitor; para a troca de senha, o token deve ter validade curta ou carregar uma versão que muda junto com a senha.
+9. **Uma consulta ao banco por requisição.** Conferir a sessão no banco é o que permite cancelar um token na hora (logout, remoção, troca de senha), ao custo de uma leitura no banco a cada arquivo servido de fonte privada. Sessões expiradas precisam de limpeza periódica.
 10. **Ações por cookie.** Como o navegador envia o cookie sozinho, as rotas que alteram dados precisam de proteção contra requisições forjadas por outros sites (`SameSite` e verificação de origem).
 11. **Custo e velocidade fora do R2.** Ler de outro provedor a cada requisição é mais lento e gera cobrança de tráfego de saída nesse provedor. O cache de arquivos (seção 12) passa a ser mais importante nessas fontes.
 
@@ -331,10 +348,10 @@ Decisões já tomadas que trazem riscos a tratar na implementação:
 
 Itens que o texto original não define:
 
-- Onde ficam guardados usuários, fontes, permissões e props.
-- Quais provedores entram na primeira versão além do R2, e se o modelo atual do projeto já permite chamar serviços externos de armazenamento.
+- **Como ligar buckets R2 pelo nome.** O projeto hoje oferece um único armazenamento de arquivos, sem escolha de bucket, e no Cloudflare a ligação direta a um bucket é fixada na publicação, não cadastrada em tela. Caminhos possíveis: (a) todas as fontes R2 serem pastas dentro desse armazenamento único; (b) tratar cada bucket R2 como serviço compatível com S3, com credenciais; (c) alterar o modelo do projeto para aceitar vários buckets.
+- Quais provedores entram na primeira versão além do R2. Os externos são alcançáveis pelas chamadas HTTP que o projeto já permite.
 - Se buckets R2 de outra conta Cloudflare devem ser aceitos (nesse caso exigem credenciais, como um serviço compatível com S3).
-- Validade do token de sessão e como o leitor troca a própria senha.
+- Validade da sessão e como o leitor troca a própria senha.
 - O que entregar quando a URL termina em pasta (sugestão: `index.html`) e quando o arquivo não existe.
 - Limite de tamanho do JSON de props e dos arquivos renderizados.
 - Cache dos arquivos lidos do bucket.
