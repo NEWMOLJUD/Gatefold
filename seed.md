@@ -199,7 +199,7 @@ Requisitos da engine:
 
 | Fluxo | Como |
 |---|---|
-| Entrar | Acessa `/admin/` e informa usuário e senha. |
+| Entrar | Acessa `/admin/` e informa usuário e senha; é levado a `/admin/home`. |
 | Adicionar leitor | Em `/admin/create-reader`, informa usuário e senha do leitor. |
 | Editar ou remover leitor | Em `/admin/edit-reader`, altera os dados ou clica em remover. |
 | Conceder ou revogar leitura | Em `/admin/edit-reader`, marca as fontes que o leitor pode ler. |
@@ -208,16 +208,18 @@ Requisitos da engine:
 | Editar props da plataforma | Em `/admin/config`. |
 | Gerenciar administradores | Em `/admin/list-admins`, `/admin/create-admin` e `/admin/edit-admin`. |
 | Gerar chaves de API | Em `/admin/api-keys`. |
+| Sair | Clica em "Sair", disponível em todas as páginas do administrador. |
 
 ### Leitor
 
 | Fluxo | Como |
 |---|---|
-| Entrar | Acessa `/reader/` e informa usuário e senha. |
-| Ver fontes disponíveis | Acessa `/reader/list-sources`. |
+| Entrar | Acessa `/reader/` e informa usuário e senha; é levado a `/reader/home`. |
+| Ver fontes disponíveis | Em `/reader/home`, vê as fontes liberadas para ele e abre qualquer uma. |
 | Acessar uma página | Acessa `/reader/view/<alias>/<arquivo>`; o sistema renderiza conforme a seção 6. |
-| Personalizar a interface | Em `/reader/config`, edita o próprio JSON de props. |
+| Personalizar a interface | A partir da home, abre `/reader/config` e edita o próprio JSON de props. |
 | Gerar chaves de API | Em `/reader/api-keys`. |
+| Sair | Clica em "Sair" na home. |
 
 ### Root
 
@@ -231,17 +233,19 @@ Requisitos da engine:
 
 | URL | Descrição |
 |---|---|
-| `/reader/` | Login do leitor. |
+| `/reader/` | Login do leitor. Quem já está logado é levado a `/reader/home`. |
+| `/reader/home` | Home do leitor: lista as fontes que ele pode ler, com link para cada uma, e dá acesso à edição dos props, às chaves de API e ao botão "Sair". |
 | `/reader/view/<alias>/<arquivo>` | Entrega o arquivo da fonte, trocando o alias por bucket e pasta. Dispensa login em fontes públicas. |
-| `/reader/list-sources` | Lista as fontes que o leitor pode ler. |
 | `/reader/config` | Edição do JSON de props do leitor. |
 | `/reader/api-keys` | Geração e revogação das chaves de API do leitor. |
+| `/reader/logout` | Encerra a sessão do leitor e leva ao login. |
 
 ### Administrador
 
 | URL | Descrição |
 |---|---|
-| `/admin/` | Login do administrador (usuário e senha). |
+| `/admin/` | Login do administrador (usuário e senha). Quem já está logado é levado a `/admin/home`. |
+| `/admin/home` | Painel do administrador: atalhos para fontes, leitores, administradores, props da plataforma e chaves de API. |
 | `/admin/config` | Edição do JSON de props da plataforma. |
 | `/admin/list-sources?<filtros>` | Lista as fontes, com busca por data de criação, quantidade de leitores e outros critérios. |
 | `/admin/create-source` | Cadastro de fonte. |
@@ -253,6 +257,9 @@ Requisitos da engine:
 | `/admin/create-admin` | Cadastro de administrador. |
 | `/admin/edit-admin?admin-id=<id>` | Edição e remoção de administrador. |
 | `/admin/api-keys` | Geração e revogação das chaves de API de administrador. |
+| `/admin/logout` | Encerra a sessão do administrador e leva ao login. |
+
+Todas as páginas do administrador exibem o botão "Sair".
 
 ### Root
 
@@ -268,7 +275,7 @@ Requisitos da engine:
 - O cookie é `HttpOnly`, `Secure` e `SameSite`, para que scripts das páginas não consigam lê-lo e outros sites não consigam usá-lo.
 - O token carrega o identificador do usuário, o papel (administrador ou leitor) e a validade.
 - A cada requisição o sistema confere a assinatura e a validade do token, e se o usuário ainda existe.
-- Sair apaga o cookie.
+- **Logout:** `/reader/logout` e `/admin/logout` apagam o cookie e levam à página de login. Só aceitam envio de formulário (POST), para que um link em outro site não deslogue o usuário. As chaves de API não são afetadas.
 
 ### Segredos do ambiente
 
