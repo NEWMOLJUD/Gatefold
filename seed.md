@@ -2,6 +2,11 @@
 
 Criar um sistema web low code de gerenciamento de sites somente leitura, baseado na idéia de caminhos descentralizados.
 
+## Importante:
+- tem que haver rotas /api/admin e /api/reader para tudo ,para facilitar integração
+
+
+
 ## Fontes:
 As fontes serão buckets r2 configurados pelo root, que permitirá que o sistema obtenha os arquivos dos sites.
 
@@ -19,16 +24,41 @@ O sistema terá apenas dois tipos de usuarios, admnistradores e leitores, admnis
 ## Usuarios.administrador.fluxos:
 
 - adicionar um leitor
+  - admnistrador acessa /admin/create-reader/ e cria um leitor , passando seu usuario e senha 
+
 - remover um leitor 
+  - usuario acessa /admin/edit-reader , e clica em remover leitor 
+
 - adicionar fontes
 - remover fontes 
 - dar uma permissão de leitura de uma fonte a um leitor 
+  - admnistrador vai em /admin/edit-reader/ e gera  a permissão para o leitor 
+
+- adicionar outro admnistrador
+- gerar chaves de api 
+
+
+
 
 ## Usuarios.leitor.fluxos:
-- ver aas fontes que ele tem permissão 
+- acessar uma pagina:
+  - usuario entra em  /reader/view/rotas-plataforma/index.html
+  - o backend carrega index.html, o backend carrega os 3 props.json( o da plataforma, o da fonte, e o do próprio usuario ) e mergeia eles. 
+  - o backend renderiza o index.html usando uma engine de templates, que permite o html acesse os params, headers, e obviamente as props criadas.
+
+- modificar as props.json 
+  o user pode entrar em   /reader/config e configurar seu props.json para poder "alterar" o comportamento da interface.
+  
+
+
 
 ## Paginas:
 
+## Paginas.reader.view:
+url:  
+    /reader/view/<alias>/file
+definição:
+    pagina onde o leitor acessa os arquivos apontados, subistutuindo o alias pelo bucket e pasta + file.
 
 ## Paginas.reader.list-fonts:
 url:
