@@ -29,6 +29,26 @@ O sistema terá apenas dois tipos de usuarios, admnistradores e leitores, admnis
 
 ## Paginas:
 
+
+## Paginas.list-fonts:
+url:
+    /user/list-fonts/
+definição:
+ pagina onde o leitor pode ver as fontes de leitura que foram cadastrados para ele.
+
+
+## Paginas.config
+url:
+    /user/config 
+definição:
+pagina onde o usuario pode configurar o json de props dele.
+
+## Paginas.admin
+url:
+    /admin/
+definição:
+pagina de login do admin, que exigirá um usuário e uma senha.
+
 ## Paginas.list-fonts:
 url:
  /admin/list-fonts?(query params de filtragem)
@@ -39,7 +59,8 @@ definição:
 url:
      /admin/edit-font?fonteid=iu2i323202
 definição: 
-página onde o admnistrador pode editar a fonte.
+página onde o admnistrador pode editar a fonte, seja o bucket,pasta, alias ou as props.json especificas da fonte.
+
 
 ## Paginas.list-readers
 url:
