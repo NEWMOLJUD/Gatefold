@@ -48,9 +48,30 @@ O sistema terá apenas dois tipos de usuarios, admnistradores e leitores, admnis
 
 - modificar as props.json 
   o user pode entrar em   /reader/config e configurar seu props.json para poder "alterar" o comportamento da interface.
-  
 
 
+## Exemplo de props.json 
+
+config-da-pataforma:
+```json
+"site":"site.mateusmoutinho.com.br",
+"age":28
+```
+config-do-reader:
+
+```json
+"age":30
+```
+
+## Apos o merge:
+(percebe que os props do leitor sobrescrevem as props da fonte e central )
+```json
+"site":"site.mateusmoutinho.com.br",
+"age":30
+```
+
+## Renderização:
+para renderizar uma página, o sistema junta todos os props, então usando algum tipo de engine, "renderiza o html " em server side, permitindo que o html acesse ifs, acesse as variaveis de props.json, acesse os query params, e  os headers.
 
 ## Paginas:
 
@@ -58,7 +79,11 @@ O sistema terá apenas dois tipos de usuarios, admnistradores e leitores, admnis
 url:  
     /reader/view/<alias>/file
 definição:
-    pagina onde o leitor acessa os arquivos apontados, subistutuindo o alias pelo bucket e pasta + file.
+    pagina onde o leitor acessa os arquivos apontados, subistutuindo o alias pelo bucket e pasta + file. 
+
+
+
+
 
 ## Paginas.reader.list-fonts:
 url:
