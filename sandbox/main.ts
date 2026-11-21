@@ -3,7 +3,7 @@ import { registerApi } from "./api.ts";
 import { type Ctx, MIGRATIONS, cleanup } from "./core.ts";
 import { registerPages } from "./pages.ts";
 
-// Canone: publishes and manages read-only sites.
+// Moljud Pages: publishes and manages read-only sites.
 //
 //   core.ts      database, authentication and the administrator and reader operations
 //   view.ts      serving the files of sites/ (permission, props, rendering)

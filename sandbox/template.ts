@@ -1,4 +1,4 @@
-// Canone's template engine. Liquid-style syntax, interpreted step by step:
+// The template engine of Moljud Pages. Liquid-style syntax, interpreted step by step:
 // nothing here generates or executes code.
 //
 //   {{ props.site }}                      prints, escaping HTML

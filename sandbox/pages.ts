@@ -487,7 +487,7 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
   route("GET", "/root/setup", async (_request, url) => {
     const body = html`<dialog id="ask"><form method="dialog">
 ${field("root-password", "Root password", html`<input type="password" id="root-password" autocomplete="off" required>`,
-  html`The value of the <code>CANONE_ROOT_PASSWORD</code> secret.`)}
+  html`The value of the <code>MOLJUD_PAGES_ROOT_PASSWORD</code> secret.`)}
 <div class="field"><button class="btn btn-primary btn-block">Continue</button></div></form></dialog>
 <div id="message" class="alert" hidden></div>
 <div id="panel" hidden>

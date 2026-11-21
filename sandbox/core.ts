@@ -1,4 +1,4 @@
-// The core of Canone: database schema, authentication and the operations the
+// The core of Moljud Pages: database schema, authentication and the operations the
 // pages and the API share. No route is defined here.
 import type { Database, SqlParam, SqlValue } from "../deps/databases.ts";
 import type { Secrets } from "../deps/secrets.ts";

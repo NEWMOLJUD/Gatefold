@@ -4,7 +4,7 @@ import { render } from "./template.ts";
 
 // Made-up values: tests never see the real secrets.
 const ROOT = "test-root-password";
-const secrets = { CANONE_ROOT_PASSWORD: ROOT, CANONE_MASTER_KEY: "test-master-key", CANONE_SIGNING_KEY: "test-signing-key" };
+const secrets = { MOLJUD_PAGES_ROOT_PASSWORD: ROOT, MOLJUD_PAGES_MASTER_KEY: "test-master-key", MOLJUD_PAGES_SIGNING_KEY: "test-signing-key" };
 const JSON_HEADERS = { "content-type": "application/json" };
 
 export default function ({ test, assert }: Tests) {
@@ -242,7 +242,7 @@ export default function ({ test, assert }: Tests) {
     // An empty `render` list turns the engine off: the file arrives as written.
     await app.fetch("/api/admin/sources/example", json("PUT", { render: [] }, { cookie: admin }));
     const raw = await (await app.fetch("/reader/view/example/", { headers: { cookie: leo.cookie } })).text();
-    assert(raw.includes('{{ props.title | default: "Canone example" }}'));
+    assert(raw.includes('{{ props.title | default: "Moljud Pages example" }}'));
   });
 
   test("files: a folder becomes index.html, what is not a template stays intact, an address that leaves the folder is refused", { secrets }, async (app) => {

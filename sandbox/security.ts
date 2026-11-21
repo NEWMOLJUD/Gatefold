@@ -4,9 +4,9 @@
 const encoder = new TextEncoder();
 
 /** Names of the environment secrets. Only the owner of the installation sets their values. */
-export const SECRET_ROOT = "CANONE_ROOT_PASSWORD";
-export const SECRET_MASTER = "CANONE_MASTER_KEY";
-export const SECRET_SIGNING = "CANONE_SIGNING_KEY";
+export const SECRET_ROOT = "MOLJUD_PAGES_ROOT_PASSWORD";
+export const SECRET_MASTER = "MOLJUD_PAGES_MASTER_KEY";
+export const SECRET_SIGNING = "MOLJUD_PAGES_SIGNING_KEY";
 
 /** PBKDF2 rounds. Stored in each hash, so it can be raised without invalidating old passwords. */
 const PASSWORD_ROUNDS = 50_000;

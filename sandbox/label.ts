@@ -21,7 +21,7 @@ export interface Label {
 }
 
 /** What a page looks like when sites/label/ is missing or label.json is broken. */
-export const DEFAULT_LABEL: Label = { name: "Canone", tagline: "Private sites, delivered to the right readers.", logo: null, favicon: null, footer: "" };
+export const DEFAULT_LABEL: Label = { name: "Moljud Pages", tagline: "Private sites, delivered to the right readers.", logo: null, favicon: null, footer: "" };
 
 const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
