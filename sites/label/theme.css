@@ -1,0 +1,84 @@
+/*
+ * theme.css — the design tokens of the system pages.
+ *
+ * Start here: change these values to match your company. Every colour,
+ * corner and typeface of the sign-in page, the administrator console and the
+ * reader library is one of these variables. The rules that use them are in
+ * app.css, which you only need to open for deeper changes.
+ *
+ * Keep the light block and the dark block in step: the pages follow the
+ * visitor's system setting.
+ */
+:root {
+  color-scheme: light dark;
+
+  /* Brand */
+  --brand: #1f4fbf;               /* Primary buttons, focus, highlights */
+  --brand-contrast: #ffffff;      /* Text on top of --brand */
+  --brand-surface: #14233b;       /* Sidebar, top bar, sign-in panel */
+  --brand-surface-ink: #ffffff;   /* Text and logo on top of --brand-surface */
+  --accent-text: #1f4fbf;         /* The brand colour when used as text on the page */
+
+  /* Neutrals */
+  --bg: #f5f6f8;                  /* Page background */
+  --surface: #ffffff;             /* Cards, dialogs */
+  --surface-2: #f8f9fb;           /* Table heads, card footers, hover */
+  --field: #ffffff;               /* Inputs */
+  --ink: #18212f;                 /* Text */
+  --muted: #5b6676;               /* Secondary text */
+  --line: #dfe3ea;                /* Borders */
+  --line-strong: #c5ccd7;         /* Borders of buttons and inputs */
+
+  /* Status */
+  --ok: #17694a;
+  --ok-bg: #e7f4ee;
+  --danger: #b3261e;
+  --danger-bg: #fcebea;
+  --warn: #7a5200;
+  --warn-bg: #fdf3d8;
+
+  /* Shape */
+  --radius: 8px;                  /* Cards, dialogs */
+  --radius-control: 6px;          /* Buttons, inputs, alerts */
+  --radius-small: 4px;            /* Chips, badges */
+  --radius-round: 50%;            /* Avatars */
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05);
+  --shadow-raised: 0 12px 32px -12px rgba(16, 24, 40, .22);
+  --overlay: rgba(16, 24, 40, .5);  /* Behind dialogs */
+
+  /* Type */
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-size: 14.5px;
+  --weight-heading: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #3b6fe0;
+    --brand-contrast: #ffffff;
+    --brand-surface: #0d1626;
+    --brand-surface-ink: #ffffff;
+    --accent-text: #8fb0f5;
+
+    --bg: #10151d;
+    --surface: #171d27;
+    --surface-2: #1c232f;
+    --field: #131922;
+    --ink: #e8ecf2;
+    --muted: #9aa5b5;
+    --line: #29313e;
+    --line-strong: #3a4454;
+
+    --ok: #6fcfa5;
+    --ok-bg: #143327;
+    --danger: #f59a93;
+    --danger-bg: #3d1a18;
+    --warn: #e9c46a;
+    --warn-bg: #3a2d0e;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-raised: 0 12px 32px -12px rgba(0, 0, 0, .7);
+    --overlay: rgba(0, 0, 0, .6);
+  }
+}

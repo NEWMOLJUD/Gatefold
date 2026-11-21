@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 148 32" role="img" aria-label="Gatefold">
+  <rect width="32" height="32" rx="6" fill="#ffffff" fill-opacity=".12"/>
+  <path d="M9 7h9l5 5v13H9z" fill="#ffffff"/>
+  <path d="M18 7v5h5z" fill="#9db4d6"/>
+  <text x="44" y="22" fill="#ffffff" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="19" font-weight="600" letter-spacing="-.2">Gatefold</text>
+</svg>

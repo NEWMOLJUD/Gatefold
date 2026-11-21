@@ -1,0 +1,46 @@
+// Generated from package.json and from what sandbox/ uses. Do not edit by hand:
+// `npm run dev`, `npm run test` and `npm run deploy` keep it current.
+// Commit this file whenever it changes: Cloudflare deploys from it.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gatefold",
+  "compatibility_date": "2026-11-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DB",
+        "class_name": "Database"
+      }
+    ]
+  },
+  "exports": {
+    "Database": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  },
+  "main": "engine/worker/index.ts",
+  "assets": {
+    "directory": "sites",
+    "binding": "SITES",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "vars": {
+    "REDOMA_NAME": "gatefold"
+  },
+  "keep_vars": true,
+  "observability": {
+    "enabled": true
+  },
+  "previews": {},
+  "build": {
+    "command": "node engine/build.ts"
+  }
+}
