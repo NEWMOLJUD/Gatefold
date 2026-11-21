@@ -1,15 +1,17 @@
 // The core of Gatefold: database schema, authentication and the operations the
 // pages and the API share. No route is defined here.
 import type { Database, SqlParam, SqlValue } from "../deps/databases.ts";
+import type { Files } from "../deps/files.ts";
 import type { Secrets } from "../deps/secrets.ts";
 import type { Sites } from "../deps/sites.ts";
-import { type Actor, type AuditEntry, type Found, SYSTEM, hourOf, record, recordAs, recordFound, recordOnce, rootActor, toAuditEntry, visitor } from "./audit.ts";
+import { type Actor, type AuditEntry, type Found, hourOf, record, recordAs, recordFound, recordOnce, recordTally, rootActor, toAuditEntry, visitor } from "./audit.ts";
 import { type Config, clientIp, publicOrigin, sameOrigin } from "./config.ts";
 import {
   type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashAttempt, hashInvite, hashPassword,
   matchMfaCode, newApiKey, newInviteToken, newMfaSecret, openMfaSecret, randomId, readCookie, safeEqual, sealMfaSecret, sessionCookie, signToken, verifyPassword, verifyToken,
 } from "./security.ts";
-import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, loadSourceConfig } from "./source-config.ts";
+import { contentTypeOf } from "./mime.ts";
+import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, SOURCE_CONFIG, loadSourceConfig } from "./source-config.ts";
 import { type Limit, cleanupAttempts, countAttempts, forgetAttempts, overLimit, readAttempts, uncountAttempts } from "./throttle.ts";
 
 /**
@@ -151,6 +153,31 @@ export const MIGRATIONS = [
   `ALTER TABLE admins ADD COLUMN mfa_secret TEXT`,
   `ALTER TABLE admins ADD COLUMN mfa_enabled_at INTEGER`,
   `ALTER TABLE admins ADD COLUMN mfa_last_step INTEGER NOT NULL DEFAULT 0`,
+  // Sources are uploaded, no longer read from the repository. The bytes of a
+  // file are in the file storage, under sources/<storage>/<path>; its row here
+  // is what makes it exist: a file without a row is never served. `storage`
+  // is a random name, not the alias, so that a source removed and created
+  // again under the same alias never meets the files of the old one.
+  // `files` and `bytes` are kept up to date with every upload and removal.
+  `ALTER TABLE sources ADD COLUMN storage TEXT`,
+  `UPDATE sources SET storage = lower(hex(randomblob(16))) WHERE storage IS NULL`,
+  `CREATE UNIQUE INDEX sources_storage ON sources (storage)`,
+  `ALTER TABLE sources ADD COLUMN files INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE sources ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0`,
+  `CREATE TABLE source_files (
+  alias TEXT NOT NULL REFERENCES sources (alias) ON DELETE CASCADE,
+  path TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  content_type TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (alias, path)
+)`,
+  // Stored files of removed sources, waiting for the scheduled job to delete them a few at a time.
+  `CREATE TABLE file_purges (
+  key TEXT PRIMARY KEY,
+  queued_at INTEGER NOT NULL
+)`,
+  `CREATE INDEX file_purges_queued_at ON file_purges (queued_at)`,
 ];
 
 /** How long a login session lasts. */
@@ -169,12 +196,25 @@ export const ROOT_PASSWORD_MIN = 32;
 export const LOGIN_ATTEMPTS = { pair: 5, address: 50, account: 20 };
 /** Items per page in listings. */
 export const PAGE_SIZE = 50;
+/** The largest file a source can hold: the limit a file of sites/ already had on Cloudflare. */
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+/** The longest path of a file inside its source, in bytes of UTF-8. */
+export const MAX_PATH_BYTES = 900;
+/** How many files one source can hold. */
+export const MAX_SOURCE_FILES = 20_000;
+/** The most files one request of the listing answers. */
+export const FILE_LIST_MAX = 1000;
+/** Stored files deleted by one run of the purge: kept under what a single request may ask of the storage. */
+const FILE_PURGE_BATCH = 40;
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
 export interface Ctx {
   db: Database;
+  /** Where the files of the sources are stored. */
+  files: Files;
+  /** The repository's sites/ folder: the white label and the installation's settings. */
   sites: Sites;
   secrets: Secrets;
   /** The installation's sites/gatefold.json, read before the first request is handled (see main.ts). */
@@ -237,34 +277,6 @@ export function redirect(location: string, cookies: string[] = []): Response {
 // ---------------------------------------------------------------------------
 
 export const ALIAS = /^[a-z0-9-]+$/;
-
-/**
- * The folders of sites/sources/ in this publication that can be a source. The
- * list is taken when the app is built, so reading it costs nothing.
- */
-export function detectedAliases(ctx: Ctx): string[] {
-  return ctx.sites.folders(SOURCES_FOLDER).filter((name) => ALIAS.test(name));
-}
-
-/** Folders of sites/sources/ that are not sources because of their name. */
-export function ignoredFolders(ctx: Ctx): string[] {
-  return ctx.sites.folders(SOURCES_FOLDER).filter((name) => !ALIAS.test(name));
-}
-
-/**
- * Every folder of sites/sources/ is a source without anyone registering it:
- * this statement gives each new one its row, private and with no permissions.
- * Rows that already exist are left as they are. It runs with every
- * administrator request, in the same database round trip. The first statement
- * writes each new folder down in the audit log.
- */
-export function syncSources(ctx: Ctx): Statement[] {
-  const aliases = JSON.stringify(detectedAliases(ctx));
-  return [
-    recordFound(SYSTEM, "source.detected", "source", { from: "json_each(?) WHERE value NOT IN (SELECT alias FROM sources)", params: [aliases], id: "value", name: "value" }),
-    ["INSERT OR IGNORE INTO sources (alias, public, created_at) SELECT value, 0, ? FROM json_each(?)", Date.now(), aliases],
-  ];
-}
 
 function username(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9._@-]{3,64}$/.test(value)) {
@@ -734,33 +746,45 @@ function paged<Item>(rows: Row[], page: number, map: (row: Row) => Item): Page<I
 // Sources
 // ---------------------------------------------------------------------------
 
-export interface Source {
+/** A source as the listing shows it. */
+export interface SourceSummary {
   alias: string;
   public: boolean;
+  created_at: number;
+  /** Readers with permission. */
+  readers: number;
+  /** How many files it holds, and how many bytes they add up to. */
+  files: number;
+  bytes: number;
+}
+
+export interface Source extends SourceSummary {
   /** Read from the source's source.json; see `origin`. */
   props: Record<string, unknown>;
   render: string[];
   /**
-   * Where `props` and `render` come from: "file" is sites/sources/<alias>/source.json,
-   * "default" is a source without that file, and "legacy" is a source without
-   * it that still has values stored by an older version of the console.
+   * Where `props` and `render` come from: "file" is the source.json uploaded
+   * with the source, "default" is a source without that file, and "legacy" is
+   * a source without it that still has values stored by an older version of
+   * the console.
    */
   origin: "file" | "default" | "legacy";
   /** What is wrong with the source.json, if anything. */
   problems: string[];
-  created_at: number;
-  /** Readers with permission. */
-  readers: number;
-  /** The subfolder is gone from the repository: the source answers "not found" until it returns or the source is removed. */
-  missing: boolean;
+}
+
+/** Where a file of a source is kept in the file storage. `storage` is the source's own random name there. */
+export function fileKey(storage: string, path: string): string {
+  return `${SOURCES_FOLDER}/${storage}/${path}`;
 }
 
 /**
  * The rendering settings in force for a source row: its source.json when it
- * has one, otherwise what the row still stores from before the file existed.
+ * has one (`hasConfig`, known from the database, so that no file is looked for
+ * in vain), otherwise what the row still stores from before the file existed.
  */
-export async function sourceSettings(ctx: Ctx, alias: string, row: Row): Promise<Pick<Source, "props" | "render" | "origin" | "problems">> {
-  const config = await loadSourceConfig(ctx.sites, alias);
+export async function sourceSettings(ctx: Ctx, row: Row, hasConfig: boolean): Promise<Pick<Source, "props" | "render" | "origin" | "problems">> {
+  const config = hasConfig ? await loadSourceConfig(ctx.files, fileKey(String(row.storage), SOURCE_CONFIG)) : null;
   if (config) return { ...config, origin: "file" };
   const render = parseList(row.render, [...DEFAULT_RENDER]);
   const props = parseObject(row.props);
@@ -768,22 +792,21 @@ export async function sourceSettings(ctx: Ctx, alias: string, row: Row): Promise
   return { props, render, origin: untouched ? "default" : "legacy", problems: [] };
 }
 
-async function toSource(ctx: Ctx, row: Row, detected: Set<string>): Promise<Source> {
-  const alias = String(row.alias);
-  const missing = !detected.has(alias);
-  const settings = missing ? { props: {}, render: [], origin: "default" as const, problems: [] } : await sourceSettings(ctx, alias, row);
+function toSummary(row: Row): SourceSummary {
   return {
-    alias,
+    alias: String(row.alias),
     public: row.public === 1,
-    ...settings,
     created_at: Number(row.created_at),
     readers: Number(row.readers ?? 0),
-    missing,
+    files: Number(row.files ?? 0),
+    bytes: Number(row.bytes ?? 0),
   };
 }
 
 const SOURCE_COLUMNS =
-  "s.alias, s.public, s.props, s.render, s.created_at, (SELECT COUNT(*) FROM permissions p WHERE p.source_alias = s.alias) AS readers";
+  "s.alias, s.public, s.props, s.render, s.created_at, s.storage, s.files, s.bytes, " +
+  "(SELECT COUNT(*) FROM permissions p WHERE p.source_alias = s.alias) AS readers, " +
+  `EXISTS (SELECT 1 FROM source_files f WHERE f.alias = s.alias AND f.path = '${SOURCE_CONFIG}') AS has_config`;
 
 /** Filters: `q` (alias prefix), `created_from`, `created_to`, `min_readers`, `page`. */
 export function listSourcesQuery(filters: URLSearchParams): Statement {
@@ -797,10 +820,9 @@ export function listSourcesQuery(filters: URLSearchParams): Statement {
   ];
 }
 
-export async function sourcesPage(ctx: Ctx, rows: Row[], filters: URLSearchParams): Promise<Page<Source> & { ignored: string[] }> {
-  const detected = new Set(detectedAliases(ctx));
-  const page = paged(rows, pageNumber(filters), (row) => toSource(ctx, row, detected));
-  return { ...page, items: await Promise.all(page.items), ignored: ignoredFolders(ctx) };
+/** The listing says how much each source holds, not how it is rendered: that would be a file read for each row. */
+export function sourcesPage(rows: Row[], filters: URLSearchParams): Page<SourceSummary> {
+  return paged(rows, pageNumber(filters), toSummary);
 }
 
 export const SOURCE_ALIASES: Statement = ["SELECT alias, public FROM sources ORDER BY alias"];
@@ -810,18 +832,47 @@ export function sourceQuery(alias: string): Statement {
 }
 
 export async function oneSource(ctx: Ctx, rows: Row[]): Promise<Source> {
-  if (!rows[0]) throw new HttpError(404, "Source not found.");
-  return toSource(ctx, rows[0], new Set(detectedAliases(ctx)));
+  const row = rows[0];
+  if (!row) throw new HttpError(404, "Source not found.");
+  return { ...toSummary(row), ...(await sourceSettings(ctx, row, row.has_config === 1)) };
 }
 
 function sourceFound(alias: string): Found {
   return { from: "sources s WHERE s.alias = ?", params: [alias], id: "s.alias", name: "s.alias" };
 }
 
+/** The longest alias a new source can take. */
+export const ALIAS_MAX = 64;
+export const ALIAS_HINT = `1 to ${ALIAS_MAX} characters: lowercase letters, digits and hyphens. It is the source's address: /reader/view/<alias>/.`;
+
+function randomHex(bytes = 16): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** A new source is empty and, unless `public` says otherwise, private: its files are uploaded next. */
+export async function createSource(ctx: Ctx, actor: Actor, input: Input): Promise<SourceSummary> {
+  const alias = input.alias;
+  if (typeof alias !== "string" || !ALIAS.test(alias) || alias.length > ALIAS_MAX) {
+    throw new HttpError(400, `The alias must have 1 to ${ALIAS_MAX} characters: lowercase letters, digits and hyphens.`);
+  }
+  const isPublic = input.public !== undefined && flag(input.public);
+  const now = Date.now();
+  try {
+    await ctx.db.batch([
+      ["INSERT INTO sources (alias, public, created_at, storage) VALUES (?, ?, ?, ?)", alias, isPublic, now, randomHex()],
+      record(actor, "source.created", { type: "source", id: alias, name: alias }, { public: isPublic }),
+    ]);
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed: sources\.alias/i.test(error.message)) throw new HttpError(409, "A source with this alias already exists.");
+    throw error;
+  }
+  return { alias, public: isPublic, created_at: now, readers: 0, files: 0, bytes: 0 };
+}
+
 /** Only the visibility is changed here: `render` and `props` live in the source's source.json. */
 export async function updateSource(ctx: Ctx, actor: Actor, alias: string, input: Input): Promise<void> {
   if (input.props !== undefined || input.render !== undefined) {
-    throw new HttpError(400, `The props and the rendered extensions are set in sites/${SOURCES_FOLDER}/${alias}/source.json, in the repository. Only "public" can be changed here.`);
+    throw new HttpError(400, `The props and the rendered extensions are set in the source's ${SOURCE_CONFIG}: upload that file to change them. Only "public" can be changed here.`);
   }
   if (input.public === undefined) throw new HttpError(400, "Nothing to change.");
   const [, changed = []] = await ctx.db.batch([
@@ -832,20 +883,182 @@ export async function updateSource(ctx: Ctx, actor: Actor, alias: string, input:
 }
 
 /**
- * Only for a source whose folder is gone: its visibility and its permissions
- * go together. A source whose folder is still published cannot be removed,
- * because it would come back at once, private and without its permissions.
+ * The source goes with its visibility, its permissions and its files. From
+ * this moment nothing of it is served: the rows are gone in one operation.
+ * The stored files are deleted a few at a time, here and then by the
+ * scheduled job, because one request may only ask so much of the storage.
+ * Answers how many stored files are still waiting.
  */
-export async function deleteSource(ctx: Ctx, actor: Actor, alias: string): Promise<void> {
-  if (detectedAliases(ctx).includes(alias)) {
-    throw new HttpError(409, `The folder sites/${SOURCES_FOLDER}/${alias}/ is still published. To remove this source, delete the folder from the repository and publish again; to close it, make it private.`);
-  }
-  const [, , removed = []] = await ctx.db.batch([
+export async function deleteSource(ctx: Ctx, actor: Actor, alias: string): Promise<{ files_pending: number }> {
+  const results = await ctx.db.batch([
     recordFound(actor, "source.removed", "source", sourceFound(alias)),
+    [
+      `INSERT OR IGNORE INTO file_purges (key, queued_at) SELECT '${SOURCES_FOLDER}/' || s.storage || '/' || f.path, ? FROM source_files f JOIN sources s ON s.alias = f.alias WHERE f.alias = ?`,
+      Date.now(), alias,
+    ],
+    ["DELETE FROM source_files WHERE alias = ?", alias],
     ["DELETE FROM permissions WHERE source_alias = ?", alias],
     ["DELETE FROM sources WHERE alias = ? RETURNING alias", alias],
   ]);
-  if (removed.length === 0) throw new HttpError(404, "Source not found.");
+  if ((results[4] ?? []).length === 0) throw new HttpError(404, "Source not found.");
+  return { files_pending: await purgeFiles(ctx) };
+}
+
+/**
+ * Scheduled job, every minute, and the last step of removing a source: deletes
+ * some of the stored files of removed sources. Answers how many are left.
+ */
+export async function purgeFiles(ctx: Ctx): Promise<number> {
+  const rows = await ctx.db.query(`SELECT key FROM file_purges ORDER BY queued_at, key LIMIT ${FILE_PURGE_BATCH}`);
+  if (rows.length === 0) return 0;
+  const keys = rows.map((row) => String(row.key));
+  await Promise.all(keys.map((key) => ctx.files.delete(key)));
+  const results = await ctx.db.batch([
+    ["DELETE FROM file_purges WHERE key IN (SELECT value FROM json_each(?))", JSON.stringify(keys)],
+    ["SELECT COUNT(*) AS n FROM file_purges"],
+  ]);
+  return Number(results[1]?.[0]?.n ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// The files of a source
+// ---------------------------------------------------------------------------
+
+export interface SourceFile {
+  /** Where the file is inside its source: "index.html", "img/logo.svg". */
+  path: string;
+  size: number;
+  content_type: string;
+  updated_at: number;
+}
+
+/**
+ * The path of a file inside its source, as it arrives in an address. Refused:
+ * nothing at all, a `\`, an empty segment, a segment that starts with a dot
+ * (hidden files, and the way out of the folder), control characters and a
+ * path longer than the storage takes.
+ */
+export function filePath(raw: string): string {
+  if (raw === "") throw new HttpError(400, "The address must name a file: .../files/<path>.");
+  // eslint-disable-next-line no-control-regex
+  if (raw.includes("\\") || /[\u0000-\u001f\u007f]/.test(raw) || raw.split("/").some((segment) => segment === "" || segment.startsWith("."))) {
+    throw new HttpError(400, "File path refused: no backslash, no empty part, and no part that starts with a dot.");
+  }
+  if (new TextEncoder().encode(raw).length > MAX_PATH_BYTES) throw new HttpError(400, `The file path is too long: the maximum is ${MAX_PATH_BYTES} bytes.`);
+  return raw;
+}
+
+function toFile(row: Row): SourceFile {
+  return { path: String(row.path), size: Number(row.size), content_type: String(row.content_type), updated_at: Number(row.updated_at) };
+}
+
+function fileLimit(filters: URLSearchParams, fallback: number): number {
+  const limit = Number(filters.get("limit") ?? "");
+  return Number.isInteger(limit) && limit >= 1 && limit <= FILE_LIST_MAX ? limit : fallback;
+}
+
+/**
+ * The files of a source, in path order. Filters: `q` (path prefix), `after`
+ * (the `next_after` of the previous answer) and `limit` (up to 1000).
+ */
+export function listFilesQuery(alias: string, filters: URLSearchParams, fallback = FILE_LIST_MAX): Statement {
+  const where = ["alias = ?"];
+  const params: SqlParam[] = [alias];
+  const q = filters.get("q");
+  if (q) (where.push("path >= ? AND path < ?"), params.push(q, `${q}￿`));
+  const after = filters.get("after");
+  if (after) (where.push("path > ?"), params.push(after));
+  return [`SELECT path, size, content_type, updated_at FROM source_files WHERE ${where.join(" AND ")} ORDER BY path LIMIT ?`, ...params, fileLimit(filters, fallback) + 1];
+}
+
+export function filesPage(rows: Row[], filters: URLSearchParams, fallback = FILE_LIST_MAX): { items: SourceFile[]; next_after: string | null } {
+  const limit = fileLimit(filters, fallback);
+  const items = rows.slice(0, limit).map(toFile);
+  return { items, next_after: rows.length > limit ? (items.at(-1)?.path ?? null) : null };
+}
+
+/**
+ * What is known about one path of a source before it is touched: the source's
+ * place in the storage and how many files it holds, whether the file exists,
+ * and whether the path collides (`clash`) with what is there: a file where
+ * this path needs a folder, or a folder where this path is a file.
+ */
+export function fileTargetQuery(alias: string, path: string): Statement {
+  const segments = path.split("/");
+  const parents = segments.slice(1).map((_, index) => segments.slice(0, index + 1).join("/"));
+  return [
+    "SELECT s.storage, s.files, EXISTS (SELECT 1 FROM source_files f WHERE f.alias = s.alias AND f.path = ?) AS existing, " +
+      "EXISTS (SELECT 1 FROM source_files f WHERE f.alias = s.alias AND (f.path IN (SELECT value FROM json_each(?)) OR (f.path >= ? AND f.path < ?))) AS clash " +
+      "FROM sources s WHERE s.alias = ?",
+    path, JSON.stringify(parents), `${path}/`, `${path}0`, alias,
+  ];
+}
+
+function fileTally(actor: Actor, action: "source.files.uploaded" | "source.files.removed", alias: string, now: number): Statement {
+  return recordTally(actor, action, `${action}:${actor.id ?? ""}:${actor.via}:${alias}:${hourOf(now)}`, { type: "source", id: alias, name: alias });
+}
+
+/**
+ * Adds a file to a source, or replaces the one at the same path. `target` is
+ * the row of `fileTargetQuery`. The bytes are stored first and the row is
+ * written after: if the second step fails the file is not served (or, for a
+ * replacement, is served with the new content), and sending it again puts
+ * everything right. The type is told from the name, whatever the request said.
+ */
+export async function putFile(ctx: Ctx, actor: Actor, alias: string, target: Row | undefined, path: string, bytes: ArrayBuffer): Promise<{ created: boolean; file: SourceFile }> {
+  if (!target) throw new HttpError(404, "Source not found.");
+  if (bytes.byteLength > MAX_FILE_BYTES) throw new HttpError(413, `The file is too large: the maximum is ${MAX_FILE_BYTES / (1024 * 1024)} MB.`);
+  if (target.clash === 1) throw new HttpError(409, "A file and a folder cannot share a name in a source. Remove what is there first.");
+  const full = `This source already holds ${MAX_SOURCE_FILES} files, the most a source can hold.`;
+  if (target.existing !== 1 && Number(target.files) >= MAX_SOURCE_FILES) throw new HttpError(409, full);
+  const storage = String(target.storage);
+  const file: SourceFile = { path, size: bytes.byteLength, content_type: contentTypeOf(path), updated_at: Date.now() };
+  await ctx.files.put(fileKey(storage, path), bytes, file.content_type);
+  const there = "EXISTS (SELECT 1 FROM source_files WHERE alias = ? AND path = ?)";
+  let results: Row[][];
+  try {
+    results = await ctx.db.batch([
+      // The source was removed (or removed and created again) while the bytes were on their way.
+      guard("NOT EXISTS (SELECT 1 FROM sources WHERE alias = ? AND storage = ?)", alias, storage),
+      [`UPDATE sources SET files = files - 1, bytes = bytes - (SELECT size FROM source_files WHERE alias = ? AND path = ?) WHERE alias = ? AND ${there} RETURNING alias`, alias, path, alias, alias, path],
+      guard("(SELECT files FROM sources WHERE alias = ?) >= ?", alias, MAX_SOURCE_FILES),
+      [
+        "INSERT INTO source_files (alias, path, size, content_type, updated_at) VALUES (?, ?, ?, ?, ?) " +
+          "ON CONFLICT (alias, path) DO UPDATE SET size = excluded.size, content_type = excluded.content_type, updated_at = excluded.updated_at",
+        alias, path, file.size, file.content_type, file.updated_at,
+      ],
+      ["UPDATE sources SET files = files + 1, bytes = bytes + ? WHERE alias = ?", file.size, alias],
+      fileTally(actor, "source.files.uploaded", alias, file.updated_at),
+    ]);
+  } catch (error) {
+    // The bytes just stored are left where they are: they have no row, so they are never served, and
+    // deleting them here could delete the file of a request that arrived in between.
+    if (guardRefused(error)) throw new HttpError(409, `The source was removed while the file was being sent, or it already holds ${MAX_SOURCE_FILES} files.`);
+    throw error;
+  }
+  return { created: (results[1] ?? []).length === 0, file };
+}
+
+/** Removes one file. `target` is the row of `fileTargetQuery`. */
+export async function deleteFile(ctx: Ctx, actor: Actor, alias: string, target: Row | undefined, path: string): Promise<void> {
+  if (!target) throw new HttpError(404, "Source not found.");
+  if (target.existing !== 1) throw new HttpError(404, "File not found.");
+  // The bytes go first: if the next step fails, the file answers "not found" and removing it again finishes the work.
+  await ctx.files.delete(fileKey(String(target.storage), path));
+  const there = "EXISTS (SELECT 1 FROM source_files WHERE alias = ? AND path = ?)";
+  await ctx.db.batch([
+    [`UPDATE sources SET files = files - 1, bytes = bytes - (SELECT size FROM source_files WHERE alias = ? AND path = ?) WHERE alias = ? AND ${there}`, alias, path, alias, alias, path],
+    ["DELETE FROM source_files WHERE alias = ? AND path = ?", alias, path],
+    fileTally(actor, "source.files.removed", alias, Date.now()),
+  ]);
+}
+
+/** One file as it was uploaded, for the administrator: no template, no reader. `target` is the row of `fileTargetQuery`. */
+export async function readFile(ctx: Ctx, target: Row | undefined, path: string): Promise<Response> {
+  if (!target) throw new HttpError(404, "Source not found.");
+  const file = target.existing === 1 ? await ctx.files.get(fileKey(String(target.storage), path)) : null;
+  if (!file) throw new HttpError(404, "File not found.");
+  return file;
 }
 
 // ---------------------------------------------------------------------------

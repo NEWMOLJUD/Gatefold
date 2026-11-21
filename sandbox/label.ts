@@ -7,6 +7,7 @@
 //   sites/label/app.css      the stylesheet of the system pages
 //   sites/label/*.svg|png    the logo and favicon named in label.json
 import type { Sites } from "../deps/sites.ts";
+import { extensionOf } from "./mime.ts";
 
 /** The subfolder of sites/ that holds the white-label files. */
 const LABEL_FOLDER = "label";
@@ -36,11 +37,7 @@ function words(value: unknown, fallback: string, max: number): string {
 }
 
 function fileName(value: unknown): string | null {
-  return typeof value === "string" && FILE_NAME.test(value) && PUBLIC_EXTENSIONS.has(extension(value)) ? value : null;
-}
-
-function extension(path: string): string {
-  return path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
+  return typeof value === "string" && FILE_NAME.test(value) && PUBLIC_EXTENSIONS.has(extensionOf(value)) ? value : null;
 }
 
 /** Reads sites/label/label.json. A missing or invalid file falls back to the defaults, key by key. */
@@ -67,7 +64,7 @@ export async function loadLabel(sites: Sites): Promise<Label> {
 
 /** `GET /label/<file>`: public, because the sign-in page needs the logo and the colours. */
 export async function labelFile(sites: Sites, request: Request, path: string): Promise<Response> {
-  const file = PUBLIC_EXTENSIONS.has(extension(path)) ? await sites.get(`${LABEL_FOLDER}/${path}`) : null;
+  const file = PUBLIC_EXTENSIONS.has(extensionOf(path)) ? await sites.get(`${LABEL_FOLDER}/${path}`) : null;
   if (!file) return new Response("Not found", { status: 404, headers: { "cache-control": "no-store" } });
   const headers = new Headers({
     "content-type": file.headers.get("content-type") ?? "application/octet-stream",

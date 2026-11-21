@@ -4,6 +4,8 @@
 //
 // Rows are only ever added. Nothing an administrator can reach updates or
 // deletes them, and they never hold a password, an API key or an access link.
+// The one row that changes after it is written is a tally (`recordTally`):
+// uploading a folder is one row whose count grows, for the hour it happens in.
 // The one thing that removes rows is time: the scheduled job deletes those
 // older than the retention period, which only root sets, and leaves a row
 // saying how many it removed.
@@ -51,9 +53,13 @@ export const ACTIONS = {
   "reader.invite.revoked": "Access link revoked",
   "reader.password.set": "Password created through a link",
   "reader.props.updated": "Reader preferences changed",
+  // Written by versions that read sources from the repository; kept so that those rows still have a name.
   "source.detected": "Source detected",
+  "source.created": "Source created",
   "source.updated": "Source visibility changed",
   "source.removed": "Source removed",
+  "source.files.uploaded": "Source files uploaded",
+  "source.files.removed": "Source files removed",
   "platform.props.updated": "Platform props changed",
   "api_key.created": "API key generated",
   "api_key.revoked": "API key revoked",
@@ -115,6 +121,20 @@ export function recordOnce(actor: Actor, action: Action, key: string, details: R
   return [
     "INSERT OR IGNORE INTO audit_log (at, actor_role, actor_id, actor_name, via, ip, action, details, dedupe) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ...head(actor, action), JSON.stringify(details), key.slice(0, 200),
+  ];
+}
+
+/**
+ * A log row that counts: the first event with this `key` writes the row with
+ * `count` 1, and each one after it adds 1 to that row instead of writing
+ * another. Put the hour in the key and a folder of three hundred files is one
+ * row that says 300, not three hundred rows.
+ */
+export function recordTally(actor: Actor, action: Action, key: string, target: { type: TargetType; id: string | null; name: string | null }): Statement {
+  return [
+    `INSERT INTO audit_log (at, actor_role, actor_id, actor_name, via, ip, action, target_type, target_id, target_name, details, dedupe) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{"count":1}', ?) ` +
+      "ON CONFLICT (dedupe) WHERE dedupe IS NOT NULL DO UPDATE SET details = json_set(details, '$.count', COALESCE(json_extract(details, '$.count'), 1) + 1)",
+    ...head(actor, action), target.type, target.id, target.name, key.slice(0, 200),
   ];
 }
 

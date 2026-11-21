@@ -3,8 +3,9 @@
 //
 // Tests also run in every installation after an update, against that
 // installation's own sites/ folder. So nothing here, and nothing in a test,
-// may count on the brand that ships with Gatefold, on the `example` source
-// being there, or on any setting an installation is free to change.
+// may count on the brand that ships with Gatefold or on any setting an
+// installation is free to change. The source the tests read is uploaded by
+// the tests themselves: see `uploadSource`.
 import type { App, Tests } from "../deps/testing.ts";
 
 // Made-up values: tests never see the real secrets.
@@ -14,12 +15,41 @@ export const secrets = { GATEFOLD_ROOT_PASSWORD: ROOT, GATEFOLD_MASTER_KEY: "tes
 const JSON_HEADERS = { "content-type": "application/json" };
 
 export interface ExampleSource {
+  alias: string;
   public: boolean;
   props: Record<string, unknown>;
   render: string[];
   origin: string;
-  missing: boolean;
+  files: number;
+  bytes: number;
 }
+
+/** A small site with everything a source can have: a template, a folder, a stylesheet, an image and its settings. */
+export const FIXTURE: Record<string, string> = {
+  "index.html": `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ props.title | default: "Gatefold example" }}</title><link rel="stylesheet" href="style.css"></head>
+<body><main>
+<h1>{{ props.title | default: "Gatefold example" }}</h1>
+{% if props.theme == "dark" %}<p>You chose the <strong>dark</strong> theme in your props.</p>{% else %}<p>Set the theme in the props to see this sentence change.</p>{% endif %}
+{% for item in props.notices %}<p>{{ forloop.index }}. {{ item }}</p>{% else %}<p>No notices.</p>{% endfor %}
+<p>Page asked in the query: {{ query.page | default: "none" }}</p>
+<p>Browser language: {{ headers.accept-language | default: "not sent" }}</p>
+<p>{% raw %}Inside a raw block, {{ this }} and {% this %} appear exactly as written.{% endraw %}</p>
+<p><a href="about/">Another page of this source</a></p>
+</main></body></html>
+`,
+  "about/index.html": `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>About</title></head>
+<body><h1>About this example</h1><p><a href="../">Back</a></p></body></html>
+`,
+  "style.css": `/* This file does not go through the template engine: only "html" is rendered by default. {{ props.title }} */
+body { margin: 0; font: 17px/1.65 system-ui, sans-serif; }
+`,
+  "img/logo.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#2f5bea"/></svg>
+`,
+  "source.json": `{ "render": ["html"], "props": { "title": "Props & templates" } }
+`,
+};
 
 export interface AuditRow {
   id: number;
@@ -75,33 +105,33 @@ export function helpers(assert: Tests["assert"]) {
   };
 
   /**
-   * The source `example` (the folder that ships with the template), which exists
-   * without anyone registering it. Returns `null` if the installation removed
-   * the folder. `settings.public` makes it public.
+   * Creates the source `alias` and uploads the files of `FIXTURE` to it, as a
+   * script holding an administrator's credential would. It starts private;
+   * `settings.public` makes it public.
    */
-  const exampleSource = async (app: App, admin: string, settings: { public?: boolean } = {}): Promise<ExampleSource | null> => {
-    const found = await app.fetch("/api/admin/sources/example", { headers: { cookie: admin } });
-    if (found.status === 404) return null;
+  const uploadSource = async (app: App, admin: string, settings: { public?: boolean; alias?: string } = {}): Promise<ExampleSource> => {
+    const alias = settings.alias ?? "example";
+    const created = await app.fetch("/api/admin/sources", json("POST", { alias, public: settings.public === true }, { cookie: admin }));
+    assert.equal(created.status, 201);
+    await created.arrayBuffer();
+    for (const [path, content] of Object.entries(FIXTURE)) {
+      const sent = await app.fetch(`/api/admin/sources/${alias}/files/${path}`, { method: "PUT", headers: { cookie: admin }, body: content });
+      assert.equal(sent.status, 201, path);
+      await sent.arrayBuffer();
+    }
+    const found = await app.fetch(`/api/admin/sources/${alias}`, { headers: { cookie: admin } });
     assert.equal(found.status, 200);
     const source = (await found.json()) as ExampleSource;
-    // A folder that was just detected is private until an administrator says otherwise.
-    assert.equal(source.public, false);
-    assert.equal(source.missing, false);
-    if (!settings.public) return source;
-    assert.equal((await app.fetch("/api/admin/sources/example", json("PUT", { public: true }, { cookie: admin }))).status, 200);
-    return { ...source, public: true };
+    assert.equal([source.public, source.files], [settings.public === true, Object.keys(FIXTURE).length]);
+    return source;
   };
 
-  /**
-   * The audit log, newest first. `query` is the filter part of the address
-   * ("action=login"). The rows for the folders found in sites/sources/ are left
-   * out: how many there are depends on the installation.
-   */
+  /** The audit log, newest first. `query` is the filter part of the address ("action=login"). */
   const audit = async (app: App, admin: string, query = ""): Promise<AuditRow[]> => {
     const response = await app.fetch(`/api/admin/audit${query ? `?${query}` : ""}`, { headers: { cookie: admin } });
     assert.equal(response.status, 200);
-    return ((await response.json()) as { items: AuditRow[] }).items.filter((row) => row.action !== "source.detected");
+    return ((await response.json()) as { items: AuditRow[] }).items;
   };
 
-  return { json, cookieOf, createAdmin, invitePath, pendingReader, acceptInvite, createReader, exampleSource, audit };
+  return { json, cookieOf, createAdmin, invitePath, pendingReader, acceptInvite, createReader, uploadSource, audit };
 }

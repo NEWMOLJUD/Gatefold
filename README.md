@@ -12,9 +12,9 @@ Open source · white-label · [MIT](LICENSE)
 
 <br>
 
-Put a static site in a folder, commit it, and Gatefold serves it behind a sign-in. You decide which readers open which site. It runs on Cloudflare Workers or on your own Linux server, and keeps everything in a single SQLite database.
+Upload the folder of a static site, and Gatefold serves it behind a sign-in. You decide which readers open which site. It runs on Cloudflare Workers or on your own Linux server, with a single SQLite database and a file storage for the sites.
 
-- **One folder per site.** `sites/sources/handbook/` is served at `/reader/view/handbook/`.
+- **One upload per site.** Choose the folder in the console, or send it from a script: the source `handbook` is served at `/reader/view/handbook/`.
 - **Access per reader.** A site is private (only the readers you pick) or public (anyone).
 - **Templates.** `{{ props.title }}`, `{% if %}`, `{% for %}`: pages adapt to the reader.
 - **Your brand.** Name, logo, colours and the whole design live in one folder, `sites/label/`. No code to touch.
@@ -71,15 +71,15 @@ npm run dev
 **5. Create the first accounts.** Open the address it printed, then:
 
 1. At `/root/setup`, type the root password and create an administrator.
-2. Sign in at `/admin/`. Under **Sources**, `example` is already listed: every folder of `sites/sources/` is a source, private until you decide otherwise.
-3. Under **Readers**, add a reader with a username and an email. You get a link: copy it. Then tick `example` on the reader's page.
+2. Sign in at `/admin/`. Under **Sources**, press **Add source**, give it an alias (`handbook`, say) and upload the folder of a site: any folder with an `index.html`. It is private until you decide otherwise.
+3. Under **Readers**, add a reader with a username and an email. You get a link: copy it. Then tick `handbook` on the reader's page.
 4. Open the link as the reader would, choose a password, and you are in the reader's library.
 
 ## Publish without a terminal
 
 You can publish from the GitHub and Cloudflare websites alone, with nothing installed on your computer.
 
-**1. Create your repository.** On GitHub press **Use this template** and choose **Private**. Whoever can read the repository can read every site in it.
+**1. Create your repository.** On GitHub press **Use this template** and choose **Private**.
 
 **2. Generate the three keys.** The app needs three secrets, and each one is simply a long random text. Generate **three different values**, one for each name in the [table above](#quick-start):
 
@@ -97,12 +97,14 @@ crypto.randomUUID() + crypto.randomUUID()
 > [!IMPORTANT]
 > Save the three values in a password manager before going on. Cloudflare never shows a secret again, and if `GATEFOLD_MASTER_KEY` is lost or replaced, every password and API key stops working.
 
-**3. Create the Worker.** In the [Cloudflare dashboard](https://dash.cloudflare.com): **Workers & Pages → Create application → GitHub**, pick your repository, name the Worker **`gatefold`** and leave the build command empty.
+**3. Turn on R2.** Gatefold keeps the files of your sites in Cloudflare's file storage, R2. In the [Cloudflare dashboard](https://dash.cloudflare.com) open **R2** and finish its one-time setup (Cloudflare asks for a payment method even for the free allowance). Without this step the publication fails.
+
+**4. Create the Worker.** In the Cloudflare dashboard: **Workers & Pages → Create application → GitHub**, pick your repository, name the Worker **`gatefold`** and leave the build command empty.
 
 > [!NOTE]
 > The name must be exactly `gatefold`, because that is the name written in `wrangler.jsonc`. A different name needs `npm run rename` in a terminal, once.
 
-**4. Add the secrets.** In **Workers & Pages → your Worker → Settings → Variables and Secrets**, press **Add**, choose the type **Secret** (not *Text*, which leaves the value visible), and create these three, each with one of the values you generated. Then press **Deploy**.
+**5. Add the secrets.** In **Workers & Pages → your Worker → Settings → Variables and Secrets**, press **Add**, choose the type **Secret** (not *Text*, which leaves the value visible), and create these three, each with one of the values you generated. Then press **Deploy**.
 
 ```
 GATEFOLD_ROOT_PASSWORD
@@ -112,23 +114,60 @@ GATEFOLD_SIGNING_KEY
 
 The names must be typed exactly like this. The first publication happens before the secrets exist, so until this step is done, signing in and `/root/setup` answer with an error: that is expected.
 
-**5. Create the first accounts.** Open the address Cloudflare gave your Worker and follow step 5 of the [Quick start](#quick-start): at `/root/setup`, the root password is the value you gave `GATEFOLD_ROOT_PASSWORD`.
+**6. Create the first accounts.** Open the address Cloudflare gave your Worker and follow step 5 of the [Quick start](#quick-start): at `/root/setup`, the root password is the value you gave `GATEFOLD_ROOT_PASSWORD`.
 
-From here on, every push to the main branch publishes, and files can be added to `sites/sources/` on the GitHub website itself.
+From here on, every push to the main branch publishes the app. Your sites are not in the repository: you upload them in the console.
 
 ## Add your sites
 
-Copy each site into its own folder under `sites/sources/` (lowercase letters, digits and hyphens), with an `index.html` at its root, commit and publish. The folder then shows up under **Sources** in the console on its own, private: choose there who reads it, or make it public. The extensions that are rendered and the source's props are written in an optional `source.json` inside the folder, described in [`sites/README.md`](sites/README.md).
+A site is a **source**. In the console, under **Sources**, press **Add source** and give it an alias (lowercase letters, digits and hyphens): the alias is its address, `/reader/view/<alias>/`. Then, on the source's page, choose the folder of the site and press **Upload folder**. Every file is sent, keeping its subfolders.
 
-```
-sites/
-  sources/
-    handbook/      →  /reader/view/handbook/
-    price-list/    →  /reader/view/price-list/
-  label/           →  the brand and design of the system pages (not a site)
+- The folder needs an `index.html` at its root: it is what `/reader/view/<alias>/` delivers. Links between pages should be relative (`about/`, `../style.css`).
+- A new source is **private**: choose who reads it on each reader's page, or make it public.
+- **A change is live at once.** Uploading the folder again replaces the files that changed; tick **Remove what is not in this folder** to also delete the ones you removed. Nothing is versioned: keep the site's own source somewhere else.
+- Files and folders whose name starts with a dot are left out. A file can have up to 25 MB, and a source up to 20,000 files.
+
+### source.json
+
+A source can carry its own settings in a `source.json` at its root, uploaded with the rest. The file is optional, is read by the system only, and is never delivered to readers:
+
+```json
+{
+  "render": ["html"],
+  "props": { "title": "Handbook" }
+}
 ```
 
-Links between pages of a site should be relative (`about/`, `../style.css`). Delete `sites/sources/example/` when you no longer need it.
+- `render`: the file extensions that go through the template engine. Without the file it is `["html"]`; an empty list turns rendering off. Careful with `js` and `css`: a file that already contains `{{` or `{%` (Vue or Handlebars code, for instance) would be interpreted, so protect those parts with `{% raw %}…{% endraw %}`. Images, PDFs, fonts and videos are never rendered.
+- `props`: values the templates of this source read as `{{ props.key }}`. They win over the platform props, and the reader's own props win over them.
+
+Whatever is wrong in the file falls back to the default of that key, and the source's page in the console lists the problems. Who may read the source is not set here: visibility and permissions stay in the console.
+
+### Publish from a script
+
+Everything the upload does is in the API, so the build of a site in another repository can publish it. Create an administrator API key under **API keys** and keep it as a secret of that repository or of its CI: never write it in a file.
+
+| Request | What it does |
+|---|---|
+| `POST /api/admin/sources` with `{"alias": "handbook"}` | Creates the source (add `"public": true` to open it to everyone). |
+| `PUT /api/admin/sources/<alias>/files/<path>` | Adds the file at that path, or replaces it. The body of the request is the content of the file. 201 for a new file, 200 for a replacement. |
+| `GET /api/admin/sources/<alias>/files` | Lists the files: `q` (path prefix), `limit` (up to 1000) and `after` (the `next_after` of the previous answer). |
+| `GET /api/admin/sources/<alias>/files/<path>` | Downloads one file as it was uploaded. |
+| `DELETE /api/admin/sources/<alias>/files/<path>` | Removes one file. |
+| `DELETE /api/admin/sources/<alias>` | Removes the source, its permissions and all its files. |
+
+Sending a whole folder from a terminal, with the key and the address in two environment variables:
+
+```bash
+cd my-site && find . -type f ! -path '*/.*' | sed 's|^\./||' | while IFS= read -r file; do
+  curl -fsS -o /dev/null -X PUT -H "Authorization: Bearer $GATEFOLD_KEY" -T "$file" "$GATEFOLD_URL/api/admin/sources/handbook/files/$file" || echo "failed: $file"
+done
+```
+
+A file name with a space or another character an address does not take must be percent-encoded (`my%20file.pdf`). The type of each file comes from its extension.
+
+> [!WARNING]
+> An administrator key can do everything an administrator can, on every source. Whoever gets it can publish any page on your address. Give it an end date, and revoke it under **API keys** as soon as it is no longer used.
 
 ## Make it your brand
 
@@ -171,7 +210,7 @@ On Cloudflare there is nothing to set. On a Linux server behind a reverse proxy,
 | Address | What it is |
 |---|---|
 | `/reader/` | Reader sign-in and library. |
-| `/reader/view/<site>/<file>` | A file of `sites/sources/<site>/`. A folder address delivers its `index.html`. |
+| `/reader/view/<site>/<file>` | A file of the source `<site>`. A folder address delivers its `index.html`. |
 | `/admin/` | Administrator sign-in and console. |
 | `/root/setup` | Creates and removes administrators with the root password. |
 | `/api/admin/*`, `/api/reader/*` | The same operations in JSON, with `Authorization: Bearer <key>`. Routes are listed in [`sandbox/api.ts`](sandbox/api.ts). |
@@ -196,7 +235,7 @@ HTML files go through a small template engine before delivery:
 
 ### Good to know
 
-- **Data:** one SQLite database. On your computer and on Linux it is in `.data/`: that folder is your backup.
+- **Data:** one SQLite database, and the files of the sources in a file storage (R2 on Cloudflare). On your computer and on Linux both are in `.data/`: that folder is your backup.
 - **Sessions** last 7 days.
 - **Passwords** have at least 10 characters, and cannot be the account's name or email, nor one of the passwords everybody tries first.
 - **Readers choose their own password.** Adding a reader gives you a link (`/reader/invite/…`) that works once and expires in 72 hours. Gatefold sends no email: you send the link. For a new password, generate a new link on the reader's page; no administrator ever sees or sets a reader's password.
@@ -210,7 +249,8 @@ HTML files go through a small template engine before delivery:
 - **Your account:** everyone changes their own password, saying the current one. An administrator's lost password is set again by whoever holds the root password, at `/root/setup`; a reader's, by a new access link.
 - **Suspending** an account signs it out and keeps it out (sessions, API keys, access links) without removing anything. The last administrator who can sign in cannot be suspended or removed, except by root.
 - **API keys** have a name, can be given an end (30 days, 90 days, a year, or any number of days through the API) and show when they were last used.
-- **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
+- **Removing a source** takes it away from readers at once. Its stored files are then deleted a few at a time, in the background: a very large source takes a few hours to free its space.
+- **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; a source holds up to 20,000 files of 25 MB each.
 
 ### Commands
 

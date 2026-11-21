@@ -1,6 +1,0 @@
-{
-  "render": ["html"],
-  "props": {
-    "title": "Props & templates"
-  }
-}

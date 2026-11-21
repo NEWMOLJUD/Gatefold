@@ -6,7 +6,7 @@ A TypeScript web server for Cloudflare Workers and Linux. The app lives in a san
 
 - `sandbox/` is the app: `main.ts` (entry point), any modules you add, `public/` (static frontend), `*.test.ts` (tests).
 - `deps/` is the contract: types and documentation for everything the app can use. No logic.
-- `sites/sources/` holds the read-only sites the app serves through `deps.sites`: one subfolder per site. Content, not code.
+- The sites the app serves ("sources") are not in the repository: an administrator uploads them, and the app keeps them through `deps.files`, with one row per file in the database.
 - `sites/label/` is the white-label folder of the app in `sandbox/` (Gatefold): name, logo and the whole design (`theme.css`, `app.css`). It is content too, and never a site. Put no CSS in `sandbox/`. The UI and the code are in English.
 - `engine/` implements `deps/` and runs the app. `scripts/` holds the `npm run` commands.
 

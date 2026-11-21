@@ -11,12 +11,16 @@
 //
 // The key goes in the `Authorization: Bearer <key>` header. Without valid
 // authentication the answer is 401; the API never redirects to the login.
+//
+// The files of a source are managed under /api/admin/sources/:alias/files:
+// a script anywhere, holding an administrator key, publishes a site with one
+// PUT for each file (the body of the request is the content of the file).
 import type { Server } from "../deps/server.ts";
 import {
-  type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
-  apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
+  type Ctx, HttpError, type Invite, MAX_FILE_BYTES, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
+  apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, createSource, deleteAccount, deleteApiKey, deleteFile, deleteSource, fileTargetQuery, filePath, filesPage, findInvite, listFilesQuery, putFile, readFile,
   identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, changeOwnPassword, exportAuditQueries, policy, setPolicy, setSuspended, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
-  readableSourcesQuery, requireRoot, revokeInvite, confirmTwoStep, disableTwoStep, resetTwoStep, startTwoStep, twoStep, twoStepQuery, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
+  readableSourcesQuery, requireRoot, revokeInvite, confirmTwoStep, disableTwoStep, resetTwoStep, startTwoStep, twoStep, twoStepQuery, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, updateAccount, updateSource,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
 import { loadLabel } from "./label.ts";
@@ -72,12 +76,11 @@ export function registerApi(server: Server, ctx: Ctx): void {
     });
   };
 
-  /** For administrators, the folders of sites/sources/ get their rows before anything is read. */
+  /** Requires the cookie or the key of the role. The reads share the same trip to the database. */
   const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const sync = role === "admin" ? syncSources(ctx) : [];
-    const { session } = await identify(ctx, request, role, { allowKey: true, reads: (user) => [...sync, ...(reads?.(user) ?? [])] });
+    const { session } = await identify(ctx, request, role, { allowKey: true, reads });
     if (!session) throw new HttpError(401, "Not authenticated.");
-    return { ...session, rows: session.rows.slice(sync.length) };
+    return session;
   };
 
   // Common to both roles ------------------------------------------------------
@@ -162,11 +165,18 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
-  // Sources are the folders of sites/sources/: there is nothing to create here.
-  // Filters: q, created_from, created_to, min_readers, page.
+  // Filters: q, created_from, created_to, min_readers, page. Each item says how many files and bytes the source
+  // holds; its props and rendered extensions are in the answer for one source.
   route("GET", "/api/admin/sources", async (request, url) => {
     const session = await enter(request, "admin", () => [listSourcesQuery(url.searchParams)]);
-    return sourcesPage(ctx, session.rows[0] ?? [], url.searchParams);
+    return sourcesPage(session.rows[0] ?? [], url.searchParams);
+  });
+
+  // `alias` (lowercase letters, digits and hyphens) and, optionally, `public`. The new source is empty: its
+  // files are sent next, one PUT each.
+  route("POST", "/api/admin/sources", async (request) => {
+    const { actor } = await enter(request, "admin");
+    return Response.json(await createSource(ctx, actor, await body(request)), { status: 201, headers: NO_STORE });
   });
 
   route("GET", "/api/admin/sources/:alias", async (request, _url, params) => {
@@ -181,10 +191,61 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
-  // Only for a source whose folder is no longer published.
+  // The source goes with its permissions and every one of its files. `files_pending` is how many stored files are
+  // still being deleted in the background; none of them is served any more.
   route("DELETE", "/api/admin/sources/:alias", async (request, _url, params) => {
     const { actor } = await enter(request, "admin");
-    await deleteSource(ctx, actor, params.alias ?? "");
+    return { ok: true, ...(await deleteSource(ctx, actor, params.alias ?? "")) };
+  });
+
+  // The files of a source, in path order. Filters: q (path prefix), limit (up to 1000) and after: the answer
+  // carries `next_after` while there is more, to be sent as `after`. Registered before the routes that end
+  // in `*`, which would also match this address.
+  route("GET", "/api/admin/sources/:alias/files", async (request, url, params) => {
+    const alias = params.alias ?? "";
+    const session = await enter(request, "admin", () => [sourceQuery(alias), listFilesQuery(alias, url.searchParams)]);
+    if (!session.rows[0]?.[0]) throw new HttpError(404, "Source not found.");
+    return filesPage(session.rows[1] ?? [], url.searchParams);
+  });
+
+  // One file exactly as it was uploaded: no template, and always a download, because what a source holds is
+  // a site of its own and must not open as a page of this console.
+  route("GET", "/api/admin/sources/:alias/files/*", async (request, _url, params) => {
+    const alias = params.alias ?? "";
+    const path = filePath(params["*"] ?? "");
+    const session = await enter(request, "admin", () => [fileTargetQuery(alias, path)]);
+    const file = await readFile(ctx, session.rows[0]?.[0], path);
+    return new Response(file.body, {
+      headers: {
+        ...NO_STORE,
+        "content-type": file.headers.get("content-type") ?? "application/octet-stream",
+        "content-disposition": "attachment",
+        "content-security-policy": "default-src 'none'; sandbox; frame-ancestors 'none'",
+        ...(file.headers.has("etag") ? { etag: file.headers.get("etag") ?? "" } : {}),
+      },
+    });
+  });
+
+  // Adds the file at this path, or replaces it: the body of the request is its content, up to 25 MB. 201 for
+  // a new file, 200 for a replacement. The type comes from the file's name. Readers see the change at once.
+  route("PUT", "/api/admin/sources/:alias/files/*", async (request, _url, params) => {
+    const alias = params.alias ?? "";
+    const path = filePath(params["*"] ?? "");
+    const session = await enter(request, "admin", () => [fileTargetQuery(alias, path)]);
+    const target = session.rows[0]?.[0];
+    if (!target) throw new HttpError(404, "Source not found.");
+    // Said before a single byte is read, when the request tells its size.
+    const tooLarge = new HttpError(413, `The file is too large: the maximum is ${MAX_FILE_BYTES / (1024 * 1024)} MB.`);
+    if (Number(request.headers.get("content-length") ?? "0") > MAX_FILE_BYTES) throw tooLarge;
+    const saved = await putFile(ctx, session.actor, alias, target, path, await request.arrayBuffer());
+    return Response.json(saved.file, { status: saved.created ? 201 : 200, headers: NO_STORE });
+  });
+
+  route("DELETE", "/api/admin/sources/:alias/files/*", async (request, _url, params) => {
+    const alias = params.alias ?? "";
+    const path = filePath(params["*"] ?? "");
+    const session = await enter(request, "admin", () => [fileTargetQuery(alias, path)]);
+    await deleteFile(ctx, session.actor, alias, session.rows[0]?.[0], path);
     return { ok: true };
   });
 

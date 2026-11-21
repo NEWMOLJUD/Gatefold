@@ -1,13 +1,13 @@
-// The settings a source carries in its own folder, versioned with its content:
+// The settings a source carries among its own files, uploaded with its content:
 //
-//   sites/sources/<alias>/source.json   { "render": ["html"], "props": { "title": "Handbook" } }
+//   source.json   { "render": ["html"], "props": { "title": "Handbook" } }
 //
 // `render` lists the file extensions that go through the template engine and
 // `props` are the values its templates read. Who may read the source is not
 // decided here: visibility and permissions belong to the administrator.
-import type { Sites } from "../deps/sites.ts";
+import type { Files } from "../deps/files.ts";
 
-/** The subfolder of sites/ that holds the published sites: sites/sources/<alias>/. */
+/** The prefix of every source file in the file storage: sources/<storage id>/<path>. */
 export const SOURCES_FOLDER = "sources";
 
 /** The settings file at the root of a source. It is never delivered to readers. */
@@ -77,9 +77,9 @@ export function parseSourceConfig(value: unknown): SourceConfig {
   return { render: extensions(config.render, problems), props: properties(config.props, problems), problems };
 }
 
-/** Reads sites/sources/<alias>/source.json, or `null` when the source has none. */
-export async function loadSourceConfig(sites: Sites, alias: string): Promise<SourceConfig | null> {
-  const file = await sites.get(`${SOURCES_FOLDER}/${alias}/${SOURCE_CONFIG}`);
+/** Reads the source.json stored under `key`, or `null` when it is not there. */
+export async function loadSourceConfig(files: Files, key: string): Promise<SourceConfig | null> {
+  const file = await files.get(key);
   if (!file) return null;
   let parsed: unknown;
   try {

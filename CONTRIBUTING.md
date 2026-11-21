@@ -14,8 +14,8 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Gatefold is small on purpose. A change is unlikely to be accepted if it breaks one of these:
 
-- **One SQLite database is the only storage.** No buckets, object storage or second database.
-- **Sites are read-only content in `sites/sources/`.** The app never writes to them.
+- **One SQLite database holds all the data.** The only other storage is the file storage of `deps.files`, and it holds one thing: the files of the sources. A file exists because its row in the database says so. No second database, no other bucket.
+- **Sources are uploaded, never read from the repository.** An administrator sends them through the console or the API. `sites/` holds only the brand (`sites/label/`) and the installation's settings.
 - **No runtime dependencies.** The app uses only what `deps/` offers and Web standard APIs.
 - **English** for the interface, the code and the documentation.
 
@@ -24,7 +24,7 @@ Gatefold is small on purpose. A change is unlikely to be accepted if it breaks o
 | Folder | What it is | Change it here? |
 |---|---|---|
 | `sandbox/` | The app: routes, pages, API, template engine and tests. | **Yes.** Almost every contribution lives here. |
-| `sites/` | Example content in `sites/sources/` and the white-label folder `sites/label/` (brand and design). | Yes, for the example and the default look. |
+| `sites/` | The white-label folder `sites/label/` (brand and design). The sites an installation publishes are not here: they are uploaded. | Yes, for the default look. |
 | `deps/` | The contract between the app and the engine: types and documentation only. | No. |
 | `engine/`, `scripts/` | The machinery from [Redoma](https://github.com/MateusMoutinhoOrg/Redoma) that runs the app. | No. Propose engine changes upstream, in Redoma. |
 

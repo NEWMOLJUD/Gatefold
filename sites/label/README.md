@@ -37,5 +37,5 @@ To use your own typeface, put the `.woff2` file here, add an `@font-face` rule t
 - **These files are public.** They are served at `/label/<file>` to everyone, signed in or not, because the sign-in page needs them. Do not put anything private here. Only images, fonts and `.css` files are served; `label.json` and this README are not.
 - **Keep `theme.css` and `app.css`.** Every system page loads both. Without them the pages still work, but unstyled.
 - If `label.json` is missing or broken, the pages fall back to the default name and no logo rather than failing.
-- This folder styles the system pages only. The sites you publish in `sites/sources/<alias>/` keep their own look.
+- This folder styles the system pages only. The sites you publish (the sources you upload) keep their own look.
 - The layout of the pages (what goes where) is part of the code in `sandbox/`, not of this folder.

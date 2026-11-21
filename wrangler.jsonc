@@ -27,6 +27,12 @@
     "html_handling": "none",
     "not_found_handling": "none"
   },
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "gatefold-files"
+    }
+  ],
   "triggers": {
     "crons": [
       "* * * * *"

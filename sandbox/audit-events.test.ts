@@ -4,12 +4,12 @@ import { ROOT, helpers, secrets } from "./test-helpers.ts";
 // What the audit log records besides changes: private sources being opened,
 // refusals, exports of the log itself, and how long all of it is kept.
 export default function ({ test, assert }: Tests) {
-  const { json, cookieOf, createAdmin, pendingReader, createReader, exampleSource, audit } = helpers(assert);
+  const { json, cookieOf, createAdmin, pendingReader, createReader, uploadSource, audit } = helpers(assert);
   const root = { "x-root-password": ROOT };
 
   test("audit: opening a private source is recorded once an hour for each reader and source", { secrets }, async (app) => {
     const admin = await createAdmin(app);
-    if (!(await exampleSource(app, admin))) return;
+    await uploadSource(app, admin);
     const leo = await createReader(app, admin);
     await app.fetch(`/api/admin/readers/${leo.id}`, json("PUT", { sources: ["example"] }, { cookie: admin }));
     // A page and everything it loads: many requests, one entry.

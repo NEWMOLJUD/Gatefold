@@ -6,7 +6,7 @@ import { ROOT, helpers, secrets } from "./test-helpers.ts";
 // settings file. The settings are tested as plain functions: what a given
 // installation wrote in its sites/gatefold.json is not this suite's business.
 export default function ({ test, assert }: Tests) {
-  const { json, createAdmin, pendingReader, exampleSource } = helpers(assert);
+  const { json, createAdmin, pendingReader, uploadSource } = helpers(assert);
   const config = (changes: Partial<Config>): Config => ({ ...DEFAULT_CONFIG, ...changes });
 
   test("headers: pages, data and source files each leave with their policy", { secrets }, async (app) => {
@@ -32,7 +32,7 @@ export default function ({ test, assert }: Tests) {
     assert.equal([moved.status, moved.headers.get("x-content-type-options")], [303, "nosniff"]);
 
     // A source's files may only be framed by this site.
-    if (!(await exampleSource(app, admin, { public: true }))) return;
+    await uploadSource(app, admin, { public: true });
     for (const path of ["/reader/view/example/", "/reader/view/example/style.css"]) {
       const file = await app.fetch(path);
       assert.equal([file.status, file.headers.get("content-security-policy"), file.headers.get("x-frame-options")], [200, "frame-ancestors 'self'", "SAMEORIGIN"], path);

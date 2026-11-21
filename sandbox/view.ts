@@ -1,8 +1,10 @@
-// Serving the sources' files: permission, reading the folder, merging the
-// props and rendering. A single database round trip per file; the rendering
-// settings come from the source's source.json.
-import { ALIAS, type Ctx, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, identify, platformProps, redirect, sourceAccessRows, sourceSettings } from "./core.ts";
-import { SOURCES_FOLDER, SOURCE_CONFIG } from "./source-config.ts";
+// Serving the sources' files: permission, reading the file storage, merging
+// the props and rendering. A single database round trip per file, which also
+// says whether the file exists; the rendering settings come from the source's
+// source.json.
+import { ALIAS, type Ctx, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, fileKey, identify, platformProps, redirect, sourceAccessRows, sourceSettings } from "./core.ts";
+import { extensionOf } from "./mime.ts";
+import { SOURCE_CONFIG } from "./source-config.ts";
 import { TemplateError, render } from "./template.ts";
 
 /** Files larger than this are served as they are, without going through the engine. */
@@ -20,7 +22,12 @@ const HIDDEN_HEADERS = /^(cookie|authorization|proxy-authorization|x-root-passwo
 
 function sourceQuery(alias: string, user: UserRef | null): Statement {
   const allowed = user ? `EXISTS (SELECT 1 FROM permissions p WHERE p.source_alias = s.alias AND p.reader_id = ${user.sql})` : "0";
-  return [`SELECT s.public, s.props, s.render, ${allowed} AS allowed FROM sources s WHERE s.alias = ?`, ...(user?.params ?? []), alias];
+  return [`SELECT s.public, s.props, s.render, s.storage, ${allowed} AS allowed FROM sources s WHERE s.alias = ?`, ...(user?.params ?? []), alias];
+}
+
+/** Which of these exist: the file asked for, the index.html of a folder with its name, and the source's settings. */
+function filesQuery(alias: string, path: string): Statement {
+  return ["SELECT path FROM source_files WHERE alias = ? AND path IN (?, ?, ?)", alias, path, `${path}/index.html`, SOURCE_CONFIG];
 }
 
 /**
@@ -30,14 +37,15 @@ function sourceQuery(alias: string, user: UserRef | null): Statement {
  */
 export async function view(ctx: Ctx, request: Request, alias: string, rest: string, mode: "page" | "api"): Promise<Response> {
   const url = new URL(request.url);
+  const path = rest === "" || url.pathname.endsWith("/") ? `${rest === "" ? "" : `${rest}/`}index.html` : rest;
   const { session, rows } = await identify(ctx, request, "reader", {
     allowKey: mode === "api",
     // The last two write down that a reader opened a private source, or was refused one: once an hour each.
     reads: (user) => {
       const access = sourceAccessRows(ctx, request, alias, user);
-      return [sourceQuery(alias, user), PLATFORM_PROPS, access.read, access.denied];
+      return [sourceQuery(alias, user), PLATFORM_PROPS, filesQuery(alias, path), access.read, access.denied];
     },
-    visitorReads: [sourceQuery(alias, null), PLATFORM_PROPS],
+    visitorReads: [sourceQuery(alias, null), PLATFORM_PROPS, filesQuery(alias, path)],
   });
   if (mode === "api" && !session) throw new HttpError(401, "Not authenticated.");
 
@@ -50,7 +58,6 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
 
   // Without the trailing slash the page's relative links would point to the wrong place.
   if (rest === "" && !url.pathname.endsWith("/")) throw new Reply(redirect(`${url.pathname}/${url.search}`));
-  const path = rest === "" || url.pathname.endsWith("/") ? `${rest === "" ? "" : `${rest}/`}index.html` : rest;
   if (path.includes("\\") || path.split("/").some((segment) => segment === "" || segment.startsWith("."))) {
     throw new HttpError(400, "Address refused.");
   }
@@ -58,18 +65,22 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
   // The source's settings are for the system, not for readers.
   if (path === SOURCE_CONFIG) throw new HttpError(404, "File not found.");
 
-  // Only a file that could be rendered needs the settings: images and the like skip that read.
-  const extension = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
-  const [file, settings] = await Promise.all([
-    ctx.sites.get(`${SOURCES_FOLDER}/${alias}/${path}`),
-    BINARY.has(extension) ? null : sourceSettings(ctx, alias, source),
-  ]);
-  if (!file) {
+  // A file exists when it has a row: the storage is only asked for what the database says is there.
+  const present = new Set((rows[2] ?? []).map((row) => String(row.path)));
+  if (!present.has(path)) {
     // A folder requested without the trailing slash: redirect to the right address, if it has an index.html.
     const name = path.slice(path.lastIndexOf("/") + 1);
-    if (!name.includes(".") && (await ctx.sites.get(`${SOURCES_FOLDER}/${alias}/${path}/index.html`))) throw new Reply(redirect(`${url.pathname}/${url.search}`));
+    if (!name.includes(".") && present.has(`${path}/index.html`)) throw new Reply(redirect(`${url.pathname}/${url.search}`));
     throw new HttpError(404, "File not found.");
   }
+
+  // Only a file that could be rendered needs the settings: images and the like skip that read.
+  const extension = extensionOf(path);
+  const [file, settings] = await Promise.all([
+    ctx.files.get(fileKey(String(source.storage), path)),
+    BINARY.has(extension) ? null : sourceSettings(ctx, source, present.has(SOURCE_CONFIG)),
+  ]);
+  if (!file) throw new HttpError(404, "File not found.");
 
   const isPublic = source.public === 1;
   const headers = new Headers({
@@ -121,7 +132,7 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
   } catch (error) {
     if (!(error instanceof TemplateError)) throw error;
     // What is wrong goes to the log, for whoever maintains the source; the reader is not shown the inside of it.
-    console.error(`Template error in ${SOURCES_FOLDER}/${alias}/${path}: ${error.message}`);
+    console.error(`Template error in the source ${alias}, file ${path}: ${error.message}`);
     throw new HttpError(500, "This page could not be rendered. Tell whoever publishes it: the reason is in the server log.");
   }
   // The result depends on the reader, the query and the headers: it is never cached.

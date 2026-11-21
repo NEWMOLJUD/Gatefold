@@ -40,8 +40,10 @@ Out of scope: problems that need access to the repository, to the server or to t
 
 Knowing these design decisions helps you run it safely, and tells you what is and is not a vulnerability.
 
-- **Whoever can read the repository can read every site in it.** Keep the repository of an installation private. Whoever can push to it can change the code that runs.
-- **Sites are trusted content.** Files in `sites/sources/` are served from the same address as the administrator console. A script inside a site can act with the session of whoever opens it, an administrator included. Publish only sites you wrote or reviewed.
+- **Whoever can push to the repository can change the code that runs.** Keep the repository of an installation private. The sites themselves are not in it: they are uploaded, and live in the installation's file storage.
+- **Sites are trusted content.** The files of a source are served from the same address as the administrator console. A script inside a site can act with the session of whoever opens it, an administrator included. Publish only sites you wrote or reviewed.
+- **Whoever can upload can publish a script.** Every administrator, and every administrator API key, can add and replace the files of any source, and so can put a page with a script on the installation's own address. An administrator key kept in another repository or in a CI system has that power: store it as a secret there, give it an end date, and revoke it when it is no longer used. Uploads are recorded in the audit log, by source and by hour.
+- **An upload is live at once and is not versioned.** A replaced or removed file cannot be brought back from the installation: keep the site's own source somewhere else.
 - **Templates escape output by default.** The `raw` filter turns that off: never use it on `query`, `headers` or on props a reader can edit.
 - **Props are not access control.** Readers can edit their own props, and theirs win over the source's. Access is decided only by the source's visibility and the reader's permissions.
 - **Three secrets hold the installation.** `GATEFOLD_ROOT_PASSWORD` creates administrators, `GATEFOLD_MASTER_KEY` protects password and API key hashes, `GATEFOLD_SIGNING_KEY` signs sessions. Use long random values, all different, and never commit them. Changing the signing key ends every session.
