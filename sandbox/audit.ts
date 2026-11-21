@@ -49,13 +49,9 @@ export type TargetType = "admin" | "reader" | "source" | "platform" | "api_key";
 
 export const SYSTEM: Actor = { role: "system", id: null, name: "system", via: "system", ip: null };
 
-/** The visitor's address, when the platform says it (Cloudflare does; a plain Linux server does not). */
-export function clientIp(request: Request): string | null {
-  return request.headers.get("cf-connecting-ip")?.slice(0, 64) ?? null;
-}
-
-export function rootActor(request: Request): Actor {
-  return { role: "root", id: null, name: "root", via: "root-password", ip: clientIp(request) };
+/** Whoever holds the root password. `ip` is the visitor's address: see `clientIp` in config.ts. */
+export function rootActor(ip: string | null): Actor {
+  return { role: "root", id: null, name: "root", via: "root-password", ip };
 }
 
 const COLUMNS = "(at, actor_role, actor_id, actor_name, via, ip, action, target_type, target_id, target_name, details)";

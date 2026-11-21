@@ -1,5 +1,7 @@
 import type { Deps } from "../deps/index.ts";
+import type { Server } from "../deps/server.ts";
 import { registerApi } from "./api.ts";
+import { DEFAULT_CONFIG, loadConfig, withHeaders } from "./config.ts";
 import { type Ctx, MIGRATIONS, cleanup } from "./core.ts";
 import { registerPages } from "./pages.ts";
 
@@ -7,6 +9,7 @@ import { registerPages } from "./pages.ts";
 //
 //   core.ts      database, authentication and the administrator and reader operations
 //   audit.ts     the audit log: one row for every change, written with the change
+//   config.ts    the installation's sites/gatefold.json, and the headers every answer carries
 //   view.ts      serving the files of sites/sources/ (permission, props, rendering)
 //   source-config.ts  the source.json of each source: rendered extensions and props
 //   template.ts  template engine
@@ -16,10 +19,21 @@ import { registerPages } from "./pages.ts";
 //   api.ts       /api/admin, /api/reader and /api/root routes
 export default function main({ server, databases, sites, secrets, cron }: Deps) {
   // A single database, with the identifier "gatefold".
-  const ctx: Ctx = { db: databases.open("gatefold", MIGRATIONS), sites, secrets };
+  const ctx: Ctx = { db: databases.open("gatefold", MIGRATIONS), sites, secrets, config: DEFAULT_CONFIG };
 
-  registerApi(server, ctx);
-  registerPages(server, ctx);
+  // Every route goes through here: the installation's settings are read before
+  // the first one runs, and every answer leaves with the security headers.
+  const routes: Server = {
+    route(method, path, handler) {
+      server.route(method, path, async (request, params) => {
+        ctx.config = await loadConfig(sites);
+        return withHeaders(request, await handler(request, params), ctx.config);
+      });
+    },
+  };
+
+  registerApi(routes, ctx);
+  registerPages(routes, ctx);
 
   // Hourly cleanup of expired sessions and old root password attempt counts.
   cron.schedule("17 * * * *", (time) => cleanup(ctx, time));

@@ -71,6 +71,10 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
   const headers = new Headers({
     "content-type": file.headers.get("content-type") ?? "application/octet-stream",
     "x-content-type-options": "nosniff",
+    // A source's pages are the installation's own content: what they load and run is their business.
+    // What is decided here is who may put them in a frame: this site (the reader's "Open in frame"), and nobody else.
+    "content-security-policy": "frame-ancestors 'self'",
+    "x-frame-options": "SAMEORIGIN",
   });
   let renderable = settings !== null && settings.render.includes(extension);
   let bytes: ArrayBuffer | null = null;
@@ -112,7 +116,9 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
     body = render(text, { props, query, headers: requestHeaders });
   } catch (error) {
     if (!(error instanceof TemplateError)) throw error;
-    throw new HttpError(500, `Template error in ${path}: ${error.message}`);
+    // What is wrong goes to the log, for whoever maintains the source; the reader is not shown the inside of it.
+    console.error(`Template error in ${SOURCES_FOLDER}/${alias}/${path}: ${error.message}`);
+    throw new HttpError(500, "This page could not be rendered. Tell whoever publishes it: the reason is in the server log.");
   }
   // The result depends on the reader, the query and the headers: it is never cached.
   headers.set("cache-control", "private, no-store");

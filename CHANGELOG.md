@@ -9,14 +9,21 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 - **Readers no longer get a password from an administrator.** `POST /api/admin/readers` takes `username` and `email` and answers with `invite.url`; `PUT /api/admin/readers/:id` refuses `password` with a 400. Readers who already have a password keep it.
 - **Usernames are now unique whatever their case.** If an installation has two accounts of the same kind whose names differ only by case, the newer one is renamed on the first start (its name gets a short suffix). Check the list of readers and administrators after updating.
 - The reader and administrator pages use two new rules in `sites/label/app.css` (`input[type=email]` and `td.wrap`). An installation with its own `app.css` should copy them.
+- **New passwords need at least 10 characters** (it was 8) and cannot be the account's name or email. Passwords that already exist keep working.
+- **A Linux server behind a reverse proxy** should say so in a new optional file, `sites/gatefold.json` (see "Behind a reverse proxy" in the README). Without it, the visitor's address is no longer taken from a header the proxy does not set, and it is recorded as unknown.
+- `POST /api/admin/login` and `POST /api/reader/login` now refuse a request a browser says came from another site, as the sign-in pages already did.
 
 ### Added
 
 - **Access links.** A reader is created with a username and an email, and chooses their own password through a link that works once and expires in 72 hours (`/reader/invite/<token>`). The same link lets a reader choose a new password. `POST` and `DELETE /api/admin/readers/:id/invite` issue and revoke it.
 - **Audit log.** Every change made to the database is recorded in the same operation as the change: who, how they were authenticated, from which address, what and on whom. Sign-ins, refused sign-ins and refused root passwords are recorded too. See it under **Audit log** in the console or at `GET /api/admin/audit`.
 
+- **Security headers on every answer.** `Strict-Transport-Security` where the installation is reached by HTTPS, a strict Content-Security-Policy on API answers, and `frame-ancestors 'self'` on the files of a source.
+- **`sites/gatefold.json`**, optional: where the visitor's address comes from (`client_ip`) and the installation's public address (`public_url`).
+
 ### Changed
 
+- A page that fails to render no longer shows the reader the file's path and the template error: both go to the server log.
 - The project is now a neutral white-label base named Gatefold. Package, Worker, secrets (`GATEFOLD_*`), cookies and database identifier were renamed: an installation published under the old name starts again with new secrets and an empty database.
 - The whole design of the system pages moved to `sites/label/` (`theme.css` for the tokens, `app.css` for the rules), with a new neutral look. No stylesheet is built into the code.
 - Published sites moved from `sites/<name>/` to `sites/sources/<name>/`.

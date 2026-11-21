@@ -148,6 +148,22 @@ The three secrets must exist **where the app runs**:
 - **From a terminal:** `npm run secret set NAME` already sent them.
 - **Linux server:** run `npm run secret set NAME` on the server.
 
+### Behind a reverse proxy
+
+On Cloudflare there is nothing to set. On a Linux server behind a reverse proxy, the app sees the proxy's address and plain HTTP instead of the visitor's, so tell it where it runs in an optional `sites/gatefold.json` (not a secret, and never served to anyone):
+
+```json
+{
+  "client_ip": "x-forwarded-for",
+  "public_url": "https://pages.example.com"
+}
+```
+
+| Key | What it is | Default |
+|---|---|---|
+| `client_ip` | The header the visitor's address is read from, for the audit log: `cloudflare` (`CF-Connecting-IP`), `x-forwarded-for`, `x-real-ip`, or `none`. Name only a header your proxy sets on every request: a header nothing sets can be written by anyone. On a server reached directly, use `none`. | `cloudflare` |
+| `public_url` | The address people type. Access links are built from it, and so is the check that a change came from this site. Without it, behind a proxy that ends HTTPS, links would say `http://` and forms would be refused. | What the app sees |
+
 ## Reference
 
 ### Addresses
@@ -182,6 +198,7 @@ HTML files go through a small template engine before delivery:
 
 - **Data:** one SQLite database. On your computer and on Linux it is in `.data/`: that folder is your backup.
 - **Sessions** last 7 days.
+- **Passwords** have at least 10 characters, and cannot be the account's name or email, nor one of the passwords everybody tries first.
 - **Readers choose their own password.** Adding a reader gives you a link (`/reader/invite/…`) that works once and expires in 72 hours. Gatefold sends no email: you send the link. For a new password, generate a new link on the reader's page; no administrator ever sees or sets a reader's password.
 - **Usernames** are unique whatever their case: `Ana` and `ana` are the same account.
 - **Audit log:** every change (accounts, permissions, visibility, props, API keys, sign-ins and refused sign-ins) is recorded with who, when and from where, under **Audit log** in the console and at `GET /api/admin/audit`. Entries cannot be edited or removed. They never hold a password, a key or a link.

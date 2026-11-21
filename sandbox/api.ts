@@ -11,7 +11,7 @@ import type { Server } from "../deps/server.ts";
 import {
   type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
   apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
-  identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
+  identify, inviteUrl, ipOf, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, requireRoot, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
@@ -24,8 +24,8 @@ type ApiHandler = (request: Request, url: URL, params: Record<string, string>) =
 const NO_STORE = { "cache-control": "no-store" };
 
 /** An access link as the API answers it: the full address, and when it stops working. */
-function inviteJson(request: Request, invite: Invite): { url: string; expires_at: number } {
-  return { url: inviteUrl(request, invite.token), expires_at: invite.expires_at };
+function inviteJson(ctx: Ctx, request: Request, invite: Invite): { url: string; expires_at: number } {
+  return { url: inviteUrl(ctx, request, invite.token), expires_at: invite.expires_at };
 }
 
 async function body(request: Request): Promise<Record<string, unknown>> {
@@ -149,7 +149,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
     route("POST", base, async (request) => {
       const { actor } = await enter(request, "admin");
       const { invite, ...account } = await createAccount(ctx, actor, role, await body(request));
-      return Response.json({ ...account, ...(invite ? { invite: inviteJson(request, invite) } : {}) }, { status: 201, headers: NO_STORE });
+      return Response.json({ ...account, ...(invite ? { invite: inviteJson(ctx, request, invite) } : {}) }, { status: 201, headers: NO_STORE });
     });
 
     route("GET", `${base}/:id`, async (request, _url, params) => {
@@ -182,7 +182,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
   // never chose a password, or to let one choose a new password.
   route("POST", "/api/admin/readers/:id/invite", async (request, _url, params) => {
     const { actor } = await enter(request, "admin");
-    return Response.json(inviteJson(request, await createInvite(ctx, actor, params.id ?? "")), { status: 201, headers: NO_STORE });
+    return Response.json(inviteJson(ctx, request, await createInvite(ctx, actor, params.id ?? "")), { status: 201, headers: NO_STORE });
   });
 
   route("DELETE", "/api/admin/readers/:id/invite", async (request, _url, params) => {
@@ -237,12 +237,12 @@ export function registerApi(server: Server, ctx: Ctx): void {
 
   route("POST", "/api/root/admins", async (request) => {
     await requireRoot(ctx, request);
-    return Response.json(await createAccount(ctx, rootActor(request), "admin", await body(request)), { status: 201, headers: NO_STORE });
+    return Response.json(await createAccount(ctx, rootActor(ipOf(ctx, request)), "admin", await body(request)), { status: 201, headers: NO_STORE });
   });
 
   route("DELETE", "/api/root/admins/:id", async (request, _url, params) => {
     await requireRoot(ctx, request);
-    await deleteAccount(ctx, rootActor(request), "admin", params.id ?? "");
+    await deleteAccount(ctx, rootActor(ipOf(ctx, request)), "admin", params.id ?? "");
     return { ok: true };
   });
 }

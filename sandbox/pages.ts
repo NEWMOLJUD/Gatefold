@@ -2,7 +2,7 @@
 // same operation of `core.ts` that the API calls.
 import type { Server } from "../deps/server.ts";
 import {
-  ACCOUNT_ROWS, type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
+  ACCOUNT_ROWS, type Ctx, HttpError, type Invite, PASSWORD_HINT, PASSWORD_MIN, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
   accountsPage, apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
   identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, redirect, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
@@ -11,7 +11,7 @@ import { ACTIONS, type AuditEntry } from "./audit.ts";
 import { JS_PATH, type PageOptions, Safe, alert, asset, badge, card, date, empty, field, html, icon, page, pager } from "./html.ts";
 import { labelFile, loadLabel } from "./label.ts";
 import { ROOT_SCRIPT } from "./root.ts";
-import { type Role, sameOrigin } from "./security.ts";
+import type { Role } from "./security.ts";
 import { view } from "./view.ts";
 
 type PageHandler = (request: Request, url: URL, params: Record<string, string>) => Promise<Response>;
@@ -126,7 +126,6 @@ ${field("password", "Password", html`<input type="password" id="password" name="
     });
 
     route("POST", path, async (request, url) => {
-      if (!sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
       const form = await request.formData();
       const { cookie } = await login(ctx, request, role, { username: text(form, "username"), password: text(form, "password") });
       return redirect(destination(url), [cookie]);
@@ -319,7 +318,7 @@ ${card(html`<div class="split"><div><strong>Remove this source</strong><p class=
       title: fresh ? "Reader added" : "Access link", crumbs: [["Readers", "/admin/list-readers"]], active: "/admin/list-readers",
       subtitle: `${reader.username} chooses their own password through this link.`,
       body: card(html`<p>Send this link to <strong>${reader.username}</strong>${reader.email ? html` (${reader.email})` : ""}. This system does not send emails: copy the link and send it yourself.</p>
-<div class="secret"><code id="new-link">${inviteUrl(request, invite.token)}</code><button type="button" class="btn btn-sm" data-copy="#new-link">Copy</button></div>
+<div class="secret"><code id="new-link">${inviteUrl(ctx, request, invite.token)}</code><button type="button" class="btn btn-sm" data-copy="#new-link">Copy</button></div>
 <p class="muted">This is the only time the link is shown. It works once and expires on ${date(invite.expires_at)} UTC. If it is lost, generate another on the reader's page.</p>
 <div class="field">${alert("warn", "Whoever opens this link chooses the password of this account. Send it only to the reader, through a channel you trust.")}</div>`,
         { title: "Copy the access link now", class: "narrow", footer: html`<a class="btn btn-primary" href="${editReader(reader.id)}">${fresh ? "Choose the sources they can open" : "Back to the reader"}</a>` }),
@@ -374,8 +373,8 @@ ${field("username", "Username", html`<input type="text" id="username" name="user
 ${role === "reader"
   ? field("email", "Email", html`<input type="email" id="email" name="email" autocomplete="off" maxlength="254" required>`,
       "Identifies the reader. No message is sent to it: you get a link to send them yourself.")
-  : html`${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>`,
-      "At least 8 characters. Share it with the person through a safe channel.")}
+  : html`${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`,
+      `${PASSWORD_HINT} Share it with the person through a safe channel.`)}
 <div class="field">${alert("warn", "An administrator can do everything, including removing the other administrators.")}</div>`}`,
         { class: "narrow", footer: html`<a class="btn" href="${listPath}">Cancel</a><button class="btn btn-primary">Add ${noun}</button>` })}</form>`;
       return adminPage(session, url, {
@@ -433,7 +432,7 @@ ${account.invite ? html`<form method="post" data-confirm="Revoke the link? It st
 ${card(html`${field("username", "Username", html`<input type="text" id="username" name="username" value="${account.username}" autocomplete="off" required>`)}
 ${role === "reader"
   ? field("email", "Email", html`<input type="email" id="email" name="email" value="${account.email ?? ""}" autocomplete="off" maxlength="254">`)
-  : field("password", "New password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8">`,
+  : field("password", "New password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}">`,
       "Leave blank to keep the current one. Changing it signs this user out everywhere.")}`, { title: "Account", class: "narrow" })}
 ${sources}<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
 <br>${access}${keys}
@@ -538,8 +537,8 @@ ${older}`, { flush: true });
     }
     const body = html`<form method="post">
 ${field("username", "Username", html`<input type="text" id="username" name="username" value="${invite.username}" autocomplete="username" readonly>`, "You will sign in with this name.")}
-${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required autofocus>`, "At least 8 characters.")}
-${field("confirm", "Repeat the password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="8" required>`)}
+${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required autofocus>`, PASSWORD_HINT)}
+${field("confirm", "Repeat the password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`)}
 <div class="field"><button class="btn btn-primary btn-block">Create password and sign in</button></div></form>`;
     return show({ title: "Create your password", subtitle: `This link works once and expires on ${date(invite.expires_at)} UTC.`, body, url });
   });
@@ -617,7 +616,7 @@ ${field("root-password", "Root password", html`<input type="password" id="root-p
 <div id="panel" hidden>
 ${card(html`<form id="create">
 ${field("username", "Username", html`<input type="text" id="username" autocomplete="off" required>`)}
-${field("password", "Password", html`<input type="password" id="password" autocomplete="new-password" minlength="8" required>`, "At least 8 characters.")}
+${field("password", "Password", html`<input type="password" id="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`, PASSWORD_HINT)}
 <div class="field"><button class="btn btn-primary">Create administrator</button></div></form>`, { title: "Create administrator" })}
 ${card(html`<div class="table-wrap"><table id="admins"></table></div>`, { title: "Administrators", flush: true })}
 <p class="auth-alt"><a href="/admin/">Go to the administrator sign-in</a></p></div>

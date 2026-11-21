@@ -154,14 +154,3 @@ export function sessionCookie(role: Role, token: string, maxAgeSeconds: number):
 export function clearCookie(role: Role): string {
   return `${cookieName(role)}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
-
-/**
- * Protection against requests forged by another site (CSRF): a change made
- * with a cookie only counts if the browser says it came from this site.
- */
-export function sameOrigin(request: Request): boolean {
-  const origin = request.headers.get("origin");
-  if (origin !== null) return origin === new URL(request.url).origin;
-  const site = request.headers.get("sec-fetch-site");
-  return site === null || site === "same-origin" || site === "none";
-}

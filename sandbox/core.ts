@@ -3,10 +3,11 @@
 import type { Database, SqlParam, SqlValue } from "../deps/databases.ts";
 import type { Secrets } from "../deps/secrets.ts";
 import type { Sites } from "../deps/sites.ts";
-import { type Actor, type AuditEntry, type Found, SYSTEM, clientIp, record, recordAs, recordFound, rootActor, toAuditEntry } from "./audit.ts";
+import { type Actor, type AuditEntry, type Found, SYSTEM, record, recordAs, recordFound, rootActor, toAuditEntry } from "./audit.ts";
+import { type Config, clientIp, publicOrigin, sameOrigin } from "./config.ts";
 import {
   type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashInvite, hashPassword,
-  newApiKey, newInviteToken, randomId, readCookie, safeEqual, sameOrigin, sessionCookie, signToken, verifyPassword, verifyToken,
+  newApiKey, newInviteToken, randomId, readCookie, safeEqual, sessionCookie, signToken, verifyPassword, verifyToken,
 } from "./security.ts";
 import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, loadSourceConfig } from "./source-config.ts";
 
@@ -132,6 +133,18 @@ export interface Ctx {
   db: Database;
   sites: Sites;
   secrets: Secrets;
+  /** The installation's sites/gatefold.json, read before the first request is handled (see main.ts). */
+  config: Config;
+}
+
+/** The visitor's address, from the source the installation trusts. */
+export function ipOf(ctx: Ctx, request: Request): string | null {
+  return clientIp(request, ctx.config);
+}
+
+/** A change made with a cookie, a password or a link only counts if the browser says it came from this site. */
+export function requireSameOrigin(ctx: Ctx, request: Request): void {
+  if (!sameOrigin(request, ctx.config)) throw new HttpError(403, "Request refused: it did not come from this site.");
 }
 
 export type Statement = [sql: string, ...params: SqlParam[]];
@@ -209,10 +222,29 @@ function email(value: unknown): string {
   return value.trim().toLowerCase();
 }
 
-function password(value: unknown): string {
-  if (typeof value !== "string" || value.length < 8 || value.length > 256) {
-    throw new HttpError(400, "The password must have 8 to 256 characters.");
+export const PASSWORD_MIN = 10;
+/** Said wherever a password is asked for. */
+export const PASSWORD_HINT = `At least ${PASSWORD_MIN} characters. Not your name or email, and not a common password.`;
+
+/** Passwords of the minimum length or more that are tried first by anyone guessing. */
+const COMMON_PASSWORDS = new Set([
+  "1234567890", "0123456789", "12345678910", "123456789a", "1q2w3e4r5t", "qwertyuiop", "qwerty12345", "qwerty123456", "password123", "password1234",
+  "passwordpassword", "password12345", "mypassword1", "administrator", "changeme123", "letmein1234", "iloveyou123", "welcome12345", "welcome123", "abcdefghij",
+  "abc1234567", "a123456789", "1234512345", "1122334455", "0987654321", "9876543210", "senha12345", "senha123456", "mudar12345",
+]);
+
+/**
+ * `about` is what is known of the account (its name, its email): a password
+ * equal to one of them is the first thing anyone tries.
+ */
+function password(value: unknown, about: (string | null | undefined)[] = []): string {
+  if (typeof value !== "string" || value.length < PASSWORD_MIN || value.length > 256) {
+    throw new HttpError(400, `The password must have ${PASSWORD_MIN} to 256 characters.`);
   }
+  const lower = value.toLowerCase();
+  const known = about.flatMap((item) => (item ? [item.toLowerCase(), item.toLowerCase().split("@")[0]!] : []));
+  if (known.includes(lower)) throw new HttpError(400, "The password cannot be the username or the email.");
+  if (new Set(lower).size < 4 || COMMON_PASSWORDS.has(lower)) throw new HttpError(400, "This password is too easy to guess. Choose another.");
   return value;
 }
 
@@ -346,12 +378,10 @@ export async function identify(
   const [who = [], ...rows] = await ctx.db.batch([principal, ...(options.reads?.(ref) ?? [])]);
   const row = who[0];
   if (!row) return { session: null, rows };
-  if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD" && !sameOrigin(request)) {
-    throw new HttpError(403, "Request refused: it did not come from this site.");
-  }
+  if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD") requireSameOrigin(ctx, request);
   const user: User = { id: String(row.id), username: String(row.username), props: parseObject(row.props) };
   const viaKey = found.kind === "key";
-  const actor: Actor = { role, id: user.id, name: user.username, via: viaKey ? "key" : "session", ip: clientIp(request) };
+  const actor: Actor = { role, id: user.id, name: user.username, via: viaKey ? "key" : "session", ip: ipOf(ctx, request) };
   return { session: { role, user, viaKey, actor, rows }, rows };
 }
 
@@ -369,12 +399,13 @@ export interface LoginResult {
  * the account's name when there is one, and never with the password.
  */
 export async function login(ctx: Ctx, request: Request, role: Role, input: Input): Promise<LoginResult> {
+  requireSameOrigin(ctx, request);
   const name = typeof input.username === "string" ? input.username : "";
   const secret = typeof input.password === "string" ? input.password.slice(0, 256) : "";
   const [row] = await ctx.db.query(`SELECT id, username, password_hash FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name);
   const valid = await verifyPassword(ctx.secrets.get(SECRET_MASTER), secret, row ? String(row.password_hash) : null);
   // What was typed is only written down when it is the name of an account: people type passwords into the wrong field.
-  const actor: Actor = { role, id: row ? String(row.id) : null, name: row ? String(row.username) : UNKNOWN_NAME, via: "password", ip: clientIp(request) };
+  const actor: Actor = { role, id: row ? String(row.id) : null, name: row ? String(row.username) : UNKNOWN_NAME, via: "password", ip: ipOf(ctx, request) };
   if (!row || !valid) {
     await ctx.db.batch([record(actor, "login.failed", null)]);
     throw new HttpError(401, "Invalid username or password.");
@@ -392,14 +423,14 @@ export async function login(ctx: Ctx, request: Request, role: Role, input: Input
 
 /** Deletes the cookie's session, if there is one, and returns the cookie that clears the browser. */
 export async function logout(ctx: Ctx, request: Request, role: Role): Promise<string> {
-  if (!sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
+  requireSameOrigin(ctx, request);
   const token = readCookie(request, cookieName(role));
   const claims = token ? await verifyToken(ctx.secrets.get(SECRET_SIGNING), token, Date.now()) : null;
   if (claims && claims.role === role) {
     const { table, column } = TABLE[role];
     await ctx.db.batch([
       // The row carries the name read from the session being closed; a session that is already gone leaves no row.
-      recordAs({ role, via: "session", ip: clientIp(request) }, "logout", {
+      recordAs({ role, via: "session", ip: ipOf(ctx, request) }, "logout", {
         from: `sessions s JOIN ${table} u ON u.id = s.${column} WHERE s.id = ?`, params: [claims.sid], id: "u.id", name: "u.username",
       }),
       ["DELETE FROM sessions WHERE id = ?", claims.sid],
@@ -410,7 +441,7 @@ export async function logout(ctx: Ctx, request: Request, role: Role): Promise<st
 
 /** Root password, with a global limit of wrong attempts per hour. */
 export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
-  if (request.method !== "GET" && !sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
+  if (request.method !== "GET") requireSameOrigin(ctx, request);
   const hour = Math.floor(Date.now() / HOUR_MS);
   const [row] = await ctx.db.query("SELECT attempts FROM root_attempts WHERE hour = ?", hour);
   if (Number(row?.attempts ?? 0) >= ROOT_ATTEMPTS_PER_HOUR) {
@@ -420,7 +451,7 @@ export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
   if (given !== "" && (await safeEqual(given, ctx.secrets.get(SECRET_ROOT)))) return;
   await ctx.db.batch([
     ["INSERT INTO root_attempts (hour, attempts) VALUES (?, 1) ON CONFLICT (hour) DO UPDATE SET attempts = attempts + 1", hour],
-    record(rootActor(request), "root.denied", null),
+    record(rootActor(ipOf(ctx, request)), "root.denied", null),
   ]);
   throw new HttpError(401, "Wrong root password.");
 }
@@ -679,7 +710,7 @@ export async function createAccount(ctx: Ctx, actor: Actor, role: Role, input: I
       ...invite.statements,
     );
   } else {
-    const hash = await hashPassword(ctx.secrets.get(SECRET_MASTER), password(input.password));
+    const hash = await hashPassword(ctx.secrets.get(SECRET_MASTER), password(input.password, [name]));
     statements.push(
       ["INSERT INTO admins (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)", account.id, name, hash, account.created_at],
       record(actor, "admin.created", { type: "admin", id: account.id, name }),
@@ -751,7 +782,7 @@ export async function updateAccount(ctx: Ctx, actor: Actor, role: Role, id: stri
   if (input.password !== undefined && input.password !== "" && role === "reader") {
     throw new HttpError(400, "A reader's password is not set here: generate an access link, and the reader chooses the password through it.");
   }
-  const newPassword = input.password !== undefined && input.password !== "" ? password(input.password) : null;
+  const newPassword = input.password !== undefined && input.password !== "" ? input.password : null;
   if (role === "reader" && input.email !== undefined && input.email !== "") wanted.email = email(input.email);
   if (role === "reader" && input.sources !== undefined) {
     const aliases = Array.isArray(input.sources) ? input.sources : [input.sources];
@@ -780,7 +811,7 @@ export async function updateAccount(ctx: Ctx, actor: Actor, role: Role, id: stri
   if (newPassword !== null) {
     changed.password = "changed";
     statements.push(
-      [`UPDATE ${table} SET password_hash = ? WHERE id = ?`, await hashPassword(ctx.secrets.get(SECRET_MASTER), newPassword), id],
+      [`UPDATE ${table} SET password_hash = ? WHERE id = ?`, await hashPassword(ctx.secrets.get(SECRET_MASTER), password(newPassword, [wanted.username ?? String(current.username)])), id],
       [`DELETE FROM sessions WHERE ${column} = ?`, id],
     );
   }
@@ -888,22 +919,22 @@ export async function revokeInvite(ctx: Ctx, actor: Actor, readerId: string): Pr
 }
 
 /** The address a reader opens to choose their password. */
-export function inviteUrl(request: Request, token: string): string {
-  return `${new URL(request.url).origin}/reader/invite/${token}`;
+export function inviteUrl(ctx: Ctx, request: Request, token: string): string {
+  return `${publicOrigin(request, ctx.config)}/reader/invite/${token}`;
 }
 
 /**
  * Whose link this is. Whoever holds the link is not signed in: the name and
  * the expiry are all they learn. `hash` is how the database knows the link.
  */
-export async function findInvite(ctx: Ctx, token: string): Promise<{ id: string; username: string; expires_at: number; hash: string }> {
+export async function findInvite(ctx: Ctx, token: string): Promise<{ id: string; username: string; email: string | null; expires_at: number; hash: string }> {
   const hash = await hashInvite(ctx.secrets.get(SECRET_MASTER), token.slice(0, 128));
   const [row] = await ctx.db.query(
-    "SELECT u.id, u.username, i.expires_at FROM invites i JOIN readers u ON u.id = i.reader_id WHERE i.token_hash = ? AND i.expires_at > ?",
+    "SELECT u.id, u.username, u.email, i.expires_at FROM invites i JOIN readers u ON u.id = i.reader_id WHERE i.token_hash = ? AND i.expires_at > ?",
     hash, Date.now(),
   );
   if (!row) throw new HttpError(404, INVALID_INVITE);
-  return { id: String(row.id), username: String(row.username), expires_at: Number(row.expires_at), hash };
+  return { id: String(row.id), username: String(row.username), email: typeof row.email === "string" ? row.email : null, expires_at: Number(row.expires_at), hash };
 }
 
 /**
@@ -912,13 +943,13 @@ export async function findInvite(ctx: Ctx, token: string): Promise<{ id: string;
  * they are signed in.
  */
 export async function acceptInvite(ctx: Ctx, request: Request, token: string, input: Input): Promise<LoginResult> {
-  if (!sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
+  requireSameOrigin(ctx, request);
   const reader = await findInvite(ctx, token);
-  const hash = await hashPassword(ctx.secrets.get(SECRET_MASTER), password(input.password));
+  const hash = await hashPassword(ctx.secrets.get(SECRET_MASTER), password(input.password, [reader.username, reader.email]));
   const tokenHash = reader.hash;
   const now = Date.now();
   const sid = randomId();
-  const actor: Actor = { role: "reader", id: reader.id, name: reader.username, via: "link", ip: clientIp(request) };
+  const actor: Actor = { role: "reader", id: reader.id, name: reader.username, via: "link", ip: ipOf(ctx, request) };
   // Every statement checks the link again: of two requests with the same link, only one finds it.
   const valid = "(SELECT reader_id FROM invites WHERE token_hash = ? AND expires_at > ?)";
   const [, changed = []] = await ctx.db.batch([
