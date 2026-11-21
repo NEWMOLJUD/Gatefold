@@ -277,9 +277,22 @@ export default function ({ test, assert }: Tests) {
     const home = await (await app.fetch("/reader/home", { headers: { cookie } })).text();
     assert(home.includes('href="/reader/view/example/"'));
 
+    // The same source inside a frame: the top bar stays, and only that page may hold an iframe.
+    const homePage = await app.fetch("/reader/home", { headers: { cookie } });
+    assert(!(homePage.headers.get("content-security-policy") ?? "").includes("frame-src"));
+    assert(home.includes('href="/reader/frame/example"'));
+    const framed = await app.fetch("/reader/frame/example", { headers: { cookie } });
+    assert.equal(framed.status, 200);
+    assert((framed.headers.get("content-security-policy") ?? "").includes("frame-src 'self'"));
+    const frame = await framed.text();
+    assert(frame.includes('<header class="top"'));
+    assert(frame.includes('<iframe class="frame" src="/reader/view/example/"'));
+    assert.equal((await app.fetch("/reader/frame/does-not-exist", { headers: { cookie } })).status, 403);
+
     // Revoking applies at once.
     await app.fetch(`/api/admin/readers/${id}`, json("PUT", { sources: [] }, { cookie: admin }));
     assert.equal((await app.fetch(page, { headers: { cookie } })).status, 403);
+    assert.equal((await app.fetch("/reader/frame/example", { headers: { cookie } })).status, 403);
   });
 
   test("props: platform < source < reader, and credentials never reach the template", { secrets }, async (app) => {

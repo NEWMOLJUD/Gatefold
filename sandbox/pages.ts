@@ -441,10 +441,11 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
     const sources = readableSources(session.rows[0]);
     const body = sources.length === 0
       ? card(empty("book", "Nothing to read yet", "No source has been shared with you so far. Ask your administrator for access."))
-      : html`<ul class="tiles">${sources.map((source) => html`<li><a class="tile" href="/reader/view/${source.alias}/">
+      : html`<ul class="tiles">${sources.map((source) => html`<li><div class="tile">
 <div class="tile-top"><span class="tile-mark" aria-hidden="true">${source.alias.slice(0, 1)}</span>${source.public ? badge("Public") : badge("Shared with you", "ok")}</div>
-<div><h2>${source.alias}</h2><p>/reader/view/${source.alias}/</p></div>
-<span class="tile-go">Open ${icon("arrow")}</span></a></li>`)}</ul>`;
+<div><h2><a href="/reader/view/${source.alias}/">${source.alias}</a></h2><p>/reader/view/${source.alias}/</p></div>
+<div class="tile-actions"><a href="/reader/view/${source.alias}/">Open ${icon("arrow")}</a>
+<a href="/reader/frame/${source.alias}">Open in frame ${icon("external")}</a></div></div></li>`)}</ul>`;
     return show({
       title: `Welcome, ${session.user.username}`, subtitle: sources.length === 0 ? undefined : `${plural(sources.length, "source", "sources")} available to you.`,
       body, role: "reader", username: session.user.username, active: "/reader/home", url,
@@ -467,6 +468,18 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
     const session = await enter(request, "reader");
     await setReaderProps(ctx, session.user.id, text(await request.formData(), "props"));
     return done("/reader/config", "Preferences saved.");
+  });
+
+  // The source inside an iframe, under the reader's top bar. The files themselves still come from /reader/view/.
+  route("GET", "/reader/frame/:alias", async (request, url, params) => {
+    const session = await enter(request, "reader", (user) => [readableSourcesQuery(user)]);
+    const alias = params.alias ?? "";
+    // A nonexistent alias and a private alias get the same answer, so aliases are not revealed.
+    if (!readableSources(session.rows[0]).some((source) => source.alias === alias)) throw new HttpError(403, "You do not have access to this source.");
+    return show({
+      title: alias, body: html`<iframe class="frame" src="/reader/view/${alias}/" title="${alias}"></iframe>`,
+      role: "reader", username: session.user.username, active: "/reader/home", url, frame: true,
+    });
   });
 
   route("GET", "/reader/view/:alias", (request, _url, params) => view(ctx, request, params.alias ?? "", "", "page"));

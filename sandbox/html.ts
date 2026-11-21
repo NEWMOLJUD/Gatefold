@@ -163,6 +163,8 @@ export interface PageOptions {
   wide?: boolean;
   /** Extra scripts (only /root/setup uses it). */
   scripts?: string[];
+  /** Reader only: the body fills the screen under the top bar (no title, no footer) and may hold an iframe of this site. */
+  frame?: boolean;
 }
 
 function brand(label: Label, href: string): Safe {
@@ -206,8 +208,10 @@ function adminShell(label: Label, options: PageOptions): Safe {
 function readerShell(label: Label, options: PageOptions): Safe {
   return html`<header class="top"><div class="top-in">${brand(label, "/reader/home")}${menu("reader", options.active)}
 <div class="top-user"><span class="name">${options.username}</span>${signOut("reader")}</div></div></header>
-<main class="reader">${heading(options)}${flashes(options.url)}${options.body}</main>
-${label.footer ? html`<footer class="foot">${label.footer}</footer>` : ""}`;
+${options.frame
+    ? html`<main class="reader-frame">${options.body}</main>`
+    : html`<main class="reader">${heading(options)}${flashes(options.url)}${options.body}</main>
+${label.footer ? html`<footer class="foot">${label.footer}</footer>` : ""}`}`;
 }
 
 /** Sign-in, root setup and message pages: the brand on one side, a box on the other. */
@@ -220,13 +224,14 @@ ${options.status && options.status >= 400 ? html`<p class="status">Error ${optio
 }
 
 export function page(label: Label, options: PageOptions): Response {
+  const framed = options.role === "reader" && options.frame === true;
   const shell = options.role === "admin" ? adminShell(label, options) : options.role === "reader" ? readerShell(label, options) : publicShell(label, options);
   const document = html`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>${options.title} · ${label.name}</title>
 ${label.favicon ? html`<link rel="icon" href="/label/${label.favicon}">` : ""}
 ${STYLESHEETS.map((href) => html`<link rel="stylesheet" href="${href}">`)}</head>
-<body>${shell}<script src="${JS_HREF}" defer></script>${(options.scripts ?? []).map((src) => html`<script src="${src}" defer></script>`)}</body></html>`;
+<body${framed ? new Safe(' class="framed"') : ""}>${shell}<script src="${JS_HREF}" defer></script>${(options.scripts ?? []).map((src) => html`<script src="${src}" defer></script>`)}</body></html>`;
   return new Response(document.text, {
     status: options.status ?? 200,
     headers: {
@@ -234,7 +239,7 @@ ${STYLESHEETS.map((href) => html`<link rel="stylesheet" href="${href}">`)}</head
       "cache-control": "no-store",
       "content-security-policy":
         "default-src 'none'; style-src 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; connect-src 'self'; " +
-        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "form-action 'self'; base-uri 'none'; frame-ancestors 'none'" + (framed ? "; frame-src 'self'" : ""),
       "x-content-type-options": "nosniff",
       "referrer-policy": "same-origin",
     },
