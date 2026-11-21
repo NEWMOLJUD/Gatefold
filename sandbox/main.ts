@@ -7,6 +7,7 @@ import { registerPages } from "./pages.ts";
 //
 //   core.ts      database, authentication and the administrator and reader operations
 //   view.ts      serving the files of sites/sources/ (permission, props, rendering)
+//   source-config.ts  the source.json of each source: rendered extensions and props
 //   template.ts  template engine
 //   pages.ts     /admin, /reader and /root pages
 //   html.ts      page shells and building blocks; styles.ts is the built-in CSS and script

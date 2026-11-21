@@ -71,7 +71,7 @@ npm run dev
 **5. Create the first accounts.** Open the address it printed, then:
 
 1. At `/root/setup`, type the root password and create an administrator.
-2. Sign in at `/admin/`. Under **Sources**, register `example`.
+2. Sign in at `/admin/`. Under **Sources**, `example` is already listed: every folder of `sites/sources/` is a source, private until you decide otherwise.
 3. Under **Readers**, add a reader and tick `example`.
 4. Sign in as that reader at `/reader/`.
 
@@ -118,7 +118,7 @@ From here on, every push to the main branch publishes, and files can be added to
 
 ## Add your sites
 
-Copy each site into its own folder under `sites/sources/` (lowercase letters, digits and hyphens), with an `index.html` at its root, commit and publish. Then register the folder under **Sources** in the console, by typing its name: until then it is invisible.
+Copy each site into its own folder under `sites/sources/` (lowercase letters, digits and hyphens), with an `index.html` at its root, commit and publish. The folder then shows up under **Sources** in the console on its own, private: choose there who reads it, or make it public. The extensions that are rendered and the source's props are written in an optional `source.json` inside the folder, described in [`sites/README.md`](sites/README.md).
 
 ```
 sites/

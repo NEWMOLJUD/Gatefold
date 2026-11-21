@@ -7,6 +7,7 @@ import {
   type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashPassword,
   newApiKey, randomId, readCookie, safeEqual, sameOrigin, sessionCookie, signToken, verifyPassword, verifyToken,
 } from "./security.ts";
+import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, loadSourceConfig } from "./source-config.ts";
 
 /**
  * Schema history. Once published, no statement is edited or removed: every
@@ -78,8 +79,6 @@ export const MIGRATIONS = [
 export const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 /** Wrong root password attempts accepted per hour, counting all visitors together. */
 export const ROOT_ATTEMPTS_PER_HOUR = 5;
-/** Maximum size of a props JSON, in characters. */
-export const MAX_PROPS = 64 * 1024;
 /** Items per page in listings. */
 export const PAGE_SIZE = 50;
 
@@ -124,18 +123,27 @@ export function redirect(location: string, cookies: string[] = []): Response {
 
 export const ALIAS = /^[a-z0-9-]+$/;
 
-/** The subfolder of sites/ that holds the published sites: sites/sources/<alias>/. */
-export const SOURCES_FOLDER = "sources";
+/**
+ * The folders of sites/sources/ in this publication that can be a source. The
+ * list is taken when the app is built, so reading it costs nothing.
+ */
+export function detectedAliases(ctx: Ctx): string[] {
+  return ctx.sites.folders(SOURCES_FOLDER).filter((name) => ALIAS.test(name));
+}
+
+/** Folders of sites/sources/ that are not sources because of their name. */
+export function ignoredFolders(ctx: Ctx): string[] {
+  return ctx.sites.folders(SOURCES_FOLDER).filter((name) => !ALIAS.test(name));
+}
 
 /**
- * Whether sites/sources/<alias>/ is in this publication. A Worker cannot list
- * a folder, so a source is recognised by the index.html at its root.
+ * Every folder of sites/sources/ is a source without anyone registering it:
+ * this statement gives each new one its row, private and with no permissions.
+ * Rows that already exist are left as they are. It runs with every
+ * administrator request, in the same database round trip.
  */
-export async function sourceExists(ctx: Ctx, alias: string): Promise<boolean> {
-  if (!ALIAS.test(alias)) return false;
-  const file = await ctx.sites.get(`${SOURCES_FOLDER}/${alias}/index.html`);
-  await file?.body?.cancel();
-  return file !== null;
+export function syncSources(ctx: Ctx): Statement {
+  return ["INSERT OR IGNORE INTO sources (alias, public, created_at) SELECT value, 0, ? FROM json_each(?)", Date.now(), JSON.stringify(detectedAliases(ctx))];
 }
 
 function username(value: unknown): string {
@@ -170,21 +178,6 @@ export function propsText(value: unknown): string {
   return text;
 }
 
-/** Accepts the list (API) or the text "html, css" (form). */
-export function renderText(value: unknown): string {
-  const items = typeof value === "string" ? value.split(/[\s,;]+/) : value;
-  if (!Array.isArray(items)) throw new HttpError(400, 'The rendered extensions must be a list, for example ["html", "css"].');
-  const extensions: string[] = [];
-  for (const item of items) {
-    if (item === "") continue;
-    const extension = typeof item === "string" ? item.replace(/^\./, "").toLowerCase() : "";
-    if (!/^[a-z0-9]{1,10}$/.test(extension)) throw new HttpError(400, `Invalid extension: ${JSON.stringify(item)}. Use names such as "html" or "css".`);
-    if (!extensions.includes(extension)) extensions.push(extension);
-  }
-  if (extensions.length > 30) throw new HttpError(400, "Too many extensions: the maximum is 30.");
-  return JSON.stringify(extensions);
-}
-
 function flag(value: unknown): boolean {
   return value === true || value === 1 || value === "1" || value === "true" || value === "on";
 }
@@ -198,12 +191,12 @@ function parseObject(text: SqlValue | undefined): Record<string, unknown> {
   }
 }
 
-function parseList(text: SqlValue | undefined): string[] {
+function parseList(text: SqlValue | undefined, fallback: string[]): string[] {
   try {
-    const parsed: unknown = JSON.parse(typeof text === "string" ? text : "[]");
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+    const parsed: unknown = JSON.parse(typeof text === "string" ? text : "");
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : fallback;
   } catch {
-    return [];
+    return fallback;
   }
 }
 
@@ -404,8 +397,17 @@ function paged<Item>(rows: Row[], page: number, map: (row: Row) => Item): Page<I
 export interface Source {
   alias: string;
   public: boolean;
+  /** Read from the source's source.json; see `origin`. */
   props: Record<string, unknown>;
   render: string[];
+  /**
+   * Where `props` and `render` come from: "file" is sites/sources/<alias>/source.json,
+   * "default" is a source without that file, and "legacy" is a source without
+   * it that still has values stored by an older version of the console.
+   */
+  origin: "file" | "default" | "legacy";
+  /** What is wrong with the source.json, if anything. */
+  problems: string[];
   created_at: number;
   /** Readers with permission. */
   readers: number;
@@ -413,16 +415,30 @@ export interface Source {
   missing: boolean;
 }
 
-async function toSource(ctx: Ctx, row: Row): Promise<Source> {
+/**
+ * The rendering settings in force for a source row: its source.json when it
+ * has one, otherwise what the row still stores from before the file existed.
+ */
+export async function sourceSettings(ctx: Ctx, alias: string, row: Row): Promise<Pick<Source, "props" | "render" | "origin" | "problems">> {
+  const config = await loadSourceConfig(ctx.sites, alias);
+  if (config) return { ...config, origin: "file" };
+  const render = parseList(row.render, [...DEFAULT_RENDER]);
+  const props = parseObject(row.props);
+  const untouched = Object.keys(props).length === 0 && JSON.stringify(render) === JSON.stringify(DEFAULT_RENDER);
+  return { props, render, origin: untouched ? "default" : "legacy", problems: [] };
+}
+
+async function toSource(ctx: Ctx, row: Row, detected: Set<string>): Promise<Source> {
   const alias = String(row.alias);
+  const missing = !detected.has(alias);
+  const settings = missing ? { props: {}, render: [], origin: "default" as const, problems: [] } : await sourceSettings(ctx, alias, row);
   return {
     alias,
     public: row.public === 1,
-    props: parseObject(row.props),
-    render: parseList(row.render),
+    ...settings,
     created_at: Number(row.created_at),
     readers: Number(row.readers ?? 0),
-    missing: !(await sourceExists(ctx, alias)),
+    missing,
   };
 }
 
@@ -441,9 +457,10 @@ export function listSourcesQuery(filters: URLSearchParams): Statement {
   ];
 }
 
-export async function sourcesPage(ctx: Ctx, rows: Row[], filters: URLSearchParams): Promise<Page<Source>> {
-  const page = paged(rows, pageNumber(filters), (row) => toSource(ctx, row));
-  return { ...page, items: await Promise.all(page.items) };
+export async function sourcesPage(ctx: Ctx, rows: Row[], filters: URLSearchParams): Promise<Page<Source> & { ignored: string[] }> {
+  const detected = new Set(detectedAliases(ctx));
+  const page = paged(rows, pageNumber(filters), (row) => toSource(ctx, row, detected));
+  return { ...page, items: await Promise.all(page.items), ignored: ignoredFolders(ctx) };
 }
 
 export const SOURCE_ALIASES: Statement = ["SELECT alias, public FROM sources ORDER BY alias"];
@@ -454,38 +471,28 @@ export function sourceQuery(alias: string): Statement {
 
 export async function oneSource(ctx: Ctx, rows: Row[]): Promise<Source> {
   if (!rows[0]) throw new HttpError(404, "Source not found.");
-  return toSource(ctx, rows[0]);
+  return toSource(ctx, rows[0], new Set(detectedAliases(ctx)));
 }
 
-export async function createSource(ctx: Ctx, input: Input): Promise<void> {
-  const alias = typeof input.alias === "string" ? input.alias : "";
-  if (!ALIAS.test(alias)) throw new HttpError(400, "The alias uses only lowercase letters, digits and hyphens.");
-  if (!(await sourceExists(ctx, alias))) {
-    throw new HttpError(400, `There is no sites/sources/${alias}/index.html in this deployment. Check the folder name, add an index.html to it, and publish again.`);
-  }
-  try {
-    await ctx.db.query(
-      "INSERT INTO sources (alias, public, props, render, created_at) VALUES (?, ?, ?, ?, ?)",
-      alias, flag(input.public), propsText(input.props ?? {}), renderText(input.render ?? ["html"]), Date.now(),
-    );
-  } catch (error) {
-    conflict(error, "This subfolder is already registered as a source.");
-  }
-}
-
+/** Only the visibility is changed here: `render` and `props` live in the source's source.json. */
 export async function updateSource(ctx: Ctx, alias: string, input: Input): Promise<void> {
-  const sets: string[] = [];
-  const params: SqlParam[] = [];
-  if (input.public !== undefined) (sets.push("public = ?"), params.push(flag(input.public)));
-  if (input.props !== undefined) (sets.push("props = ?"), params.push(propsText(input.props)));
-  if (input.render !== undefined) (sets.push("render = ?"), params.push(renderText(input.render)));
-  if (sets.length === 0) throw new HttpError(400, "Nothing to change.");
-  const changed = await ctx.db.query(`UPDATE sources SET ${sets.join(", ")} WHERE alias = ? RETURNING alias`, ...params, alias);
+  if (input.props !== undefined || input.render !== undefined) {
+    throw new HttpError(400, `The props and the rendered extensions are set in sites/${SOURCES_FOLDER}/${alias}/source.json, in the repository. Only "public" can be changed here.`);
+  }
+  if (input.public === undefined) throw new HttpError(400, "Nothing to change.");
+  const changed = await ctx.db.query("UPDATE sources SET public = ? WHERE alias = ? RETURNING alias", flag(input.public), alias);
   if (changed.length === 0) throw new HttpError(404, "Source not found.");
 }
 
-/** The configuration and the permissions go together. The files stay in the folder. */
+/**
+ * Only for a source whose folder is gone: its visibility and its permissions
+ * go together. A source whose folder is still published cannot be removed,
+ * because it would come back at once, private and without its permissions.
+ */
 export async function deleteSource(ctx: Ctx, alias: string): Promise<void> {
+  if (detectedAliases(ctx).includes(alias)) {
+    throw new HttpError(409, `The folder sites/${SOURCES_FOLDER}/${alias}/ is still published. To remove this source, delete the folder from the repository and publish again; to close it, make it private.`);
+  }
   const [, removed = []] = await ctx.db.batch([
     ["DELETE FROM permissions WHERE source_alias = ?", alias],
     ["DELETE FROM sources WHERE alias = ? RETURNING alias", alias],

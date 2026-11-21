@@ -15,6 +15,8 @@ a { color: var(--accent-text); text-decoration: underline; text-decoration-color
 a:hover { text-decoration-color: currentColor; }
 .brand, .nav a, .btn, .stat, .tile, .links a, .crumbs a { text-decoration: none; }
 code { font-family: var(--mono); font-size: .92em; word-break: break-all; }
+pre { margin: 0; padding: 12px 14px; border-radius: var(--radius-control); background: var(--surface-2); border: 1px solid var(--line); overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+pre code { word-break: normal; white-space: pre; }
 .icon { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .muted { color: var(--muted); }
 .stack > * + * { margin-top: 16px; }

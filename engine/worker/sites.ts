@@ -6,8 +6,9 @@ import type { Env } from "./env.ts";
 
 export function createSites(env: Env): Sites {
   return {
-    folders(): string[] {
-      return [...folders];
+    folders(parent: string = ""): string[] {
+      if (typeof parent !== "string") throw new TypeError(`sites.folders: the parent must be a string (got ${typeof parent}).`);
+      return Object.hasOwn(folders, parent) ? [...folders[parent]!] : [];
     },
 
     async get(path: string): Promise<Response | null> {

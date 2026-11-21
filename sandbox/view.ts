@@ -1,6 +1,8 @@
 // Serving the sources' files: permission, reading the folder, merging the
-// props and rendering. A single database round trip per file.
-import { ALIAS, type Ctx, SOURCES_FOLDER, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, identify, platformProps, redirect } from "./core.ts";
+// props and rendering. A single database round trip per file; the rendering
+// settings come from the source's source.json.
+import { ALIAS, type Ctx, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, identify, platformProps, redirect, sourceSettings } from "./core.ts";
+import { SOURCES_FOLDER, SOURCE_CONFIG } from "./source-config.ts";
 import { TemplateError, render } from "./template.ts";
 
 /** Files larger than this are served as they are, without going through the engine. */
@@ -19,15 +21,6 @@ const HIDDEN_HEADERS = /^(cookie|authorization|proxy-authorization|x-root-passwo
 function sourceQuery(alias: string, user: UserRef | null): Statement {
   const allowed = user ? `EXISTS (SELECT 1 FROM permissions p WHERE p.source_alias = s.alias AND p.reader_id = ${user.sql})` : "0";
   return [`SELECT s.public, s.props, s.render, ${allowed} AS allowed FROM sources s WHERE s.alias = ?`, ...(user?.params ?? []), alias];
-}
-
-function object(text: unknown): Record<string, unknown> {
-  try {
-    const parsed: unknown = JSON.parse(String(text));
-    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
 }
 
 /**
@@ -58,7 +51,15 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
     throw new HttpError(400, "Address refused.");
   }
 
-  const file = await ctx.sites.get(`${SOURCES_FOLDER}/${alias}/${path}`);
+  // The source's settings are for the system, not for readers.
+  if (path === SOURCE_CONFIG) throw new HttpError(404, "File not found.");
+
+  // Only a file that could be rendered needs the settings: images and the like skip that read.
+  const extension = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
+  const [file, settings] = await Promise.all([
+    ctx.sites.get(`${SOURCES_FOLDER}/${alias}/${path}`),
+    BINARY.has(extension) ? null : sourceSettings(ctx, alias, source),
+  ]);
   if (!file) {
     // A folder requested without the trailing slash: redirect to the right address, if it has an index.html.
     const name = path.slice(path.lastIndexOf("/") + 1);
@@ -71,8 +72,7 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
     "content-type": file.headers.get("content-type") ?? "application/octet-stream",
     "x-content-type-options": "nosniff",
   });
-  const extension = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
-  let renderable = !BINARY.has(extension) && (JSON.parse(String(source.render)) as unknown[]).includes(extension);
+  let renderable = settings !== null && settings.render.includes(extension);
   let bytes: ArrayBuffer | null = null;
   let text = "";
   if (renderable) {
@@ -105,7 +105,7 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
     if (!HIDDEN_HEADERS.test(name.toLowerCase())) requestHeaders[name.toLowerCase()] = value;
   });
   // platform < source < reader: the most specific wins.
-  const props = { ...platformProps(rows[1]), ...object(source.props), ...(session?.user.props ?? {}) };
+  const props = { ...platformProps(rows[1]), ...(settings?.props ?? {}), ...(session?.user.props ?? {}) };
 
   let body: string;
   try {

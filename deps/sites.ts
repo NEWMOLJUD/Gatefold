@@ -9,13 +9,17 @@
  */
 export interface Sites {
   /**
-   * Names of the direct subfolders of `sites/`, sorted. The list is taken
-   * when the app is built: a folder added later appears after the next
-   * publish (or the next start of `npm run dev`).
+   * Names of the direct subfolders of `sites/`, sorted. With `parent`, the
+   * name of one of those subfolders, the names of its own direct subfolders
+   * instead; any other `parent` (a deeper path, a folder that does not exist)
+   * gives `[]`. Hidden folders (a name that starts with a dot) are left out.
+   * The lists are taken when the app is built: a folder added later appears
+   * after the next publish (or the next start of `npm run dev`).
    * @example
    * const available = sites.folders(); // ["docs", "manual"]
+   * const chapters = sites.folders("manual"); // ["install", "usage"]
    */
-  folders(): string[];
+  folders(parent?: string): string[];
 
   /**
    * The file `sites/<path>` as a `Response` (body, `Content-Type`, `ETag`), or

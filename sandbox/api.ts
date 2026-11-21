@@ -9,9 +9,9 @@
 import type { Server } from "../deps/server.ts";
 import {
   type Ctx, HttpError, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Statement, type UserRef, accountQueries, accountsPage,
-  apiKeys, apiKeysQuery, createAccount, createApiKey, createSource, deleteAccount, deleteApiKey, deleteSource,
+  apiKeys, apiKeysQuery, createAccount, createApiKey, deleteAccount, deleteApiKey, deleteSource,
   identify, listAccountsQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
-  readableSourcesQuery, requireRoot, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, updateAccount, updateSource,
+  readableSourcesQuery, requireRoot, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import type { Role } from "./security.ts";
 import { view } from "./view.ts";
@@ -46,10 +46,12 @@ export function registerApi(server: Server, ctx: Ctx): void {
     });
   };
 
+  /** For administrators, the folders of sites/sources/ get their rows before anything is read. */
   const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const { session } = await identify(ctx, request, role, { allowKey: true, reads });
+    const sync = role === "admin" ? [syncSources(ctx)] : [];
+    const { session } = await identify(ctx, request, role, { allowKey: true, reads: (user) => [...sync, ...(reads?.(user) ?? [])] });
     if (!session) throw new HttpError(401, "Not authenticated.");
-    return session;
+    return { ...session, rows: session.rows.slice(sync.length) };
   };
 
   // Common to both roles ------------------------------------------------------
@@ -99,16 +101,11 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
+  // Sources are the folders of sites/sources/: there is nothing to create here.
   // Filters: q, created_from, created_to, min_readers, page.
   route("GET", "/api/admin/sources", async (request, url) => {
     const session = await enter(request, "admin", () => [listSourcesQuery(url.searchParams)]);
     return sourcesPage(ctx, session.rows[0] ?? [], url.searchParams);
-  });
-
-  route("POST", "/api/admin/sources", async (request) => {
-    await enter(request, "admin");
-    await createSource(ctx, await body(request));
-    return Response.json({ ok: true }, { status: 201, headers: NO_STORE });
   });
 
   route("GET", "/api/admin/sources/:alias", async (request, _url, params) => {
@@ -116,12 +113,14 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return oneSource(ctx, session.rows[0] ?? []);
   });
 
+  // The only field is `public`: props and rendered extensions come from the source's source.json.
   route("PUT", "/api/admin/sources/:alias", async (request, _url, params) => {
     await enter(request, "admin");
     await updateSource(ctx, params.alias ?? "", await body(request));
     return { ok: true };
   });
 
+  // Only for a source whose folder is no longer published.
   route("DELETE", "/api/admin/sources/:alias", async (request, _url, params) => {
     await enter(request, "admin");
     await deleteSource(ctx, params.alias ?? "");

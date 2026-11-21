@@ -1,5 +1,6 @@
 import type { App, Tests } from "../deps/testing.ts";
 import { safeNext } from "./pages.ts";
+import { parseSourceConfig } from "./source-config.ts";
 import { render } from "./template.ts";
 
 // Made-up values: tests never see the real secrets.
@@ -33,13 +34,33 @@ export default function ({ test, assert }: Tests) {
     return { id, cookie: cookieOf(login) };
   };
 
-  /** Registers the source `example` (the folder that ships with the template). Returns `false` if the installation removed it. */
-  const registerExample = async (app: App, admin: string, settings: Record<string, unknown> = {}): Promise<boolean> => {
-    const created = await app.fetch("/api/admin/sources", json("POST", { alias: "example", ...settings }, { cookie: admin }));
-    if (created.status === 400) return false;
-    assert.equal(created.status, 201);
-    return true;
+  interface ExampleSource {
+    public: boolean;
+    props: Record<string, unknown>;
+    render: string[];
+    origin: string;
+    missing: boolean;
+  }
+
+  /**
+   * The source `example` (the folder that ships with the template), which exists
+   * without anyone registering it. Returns `null` if the installation removed
+   * the folder. `settings.public` makes it public.
+   */
+  const exampleSource = async (app: App, admin: string, settings: { public?: boolean } = {}): Promise<ExampleSource | null> => {
+    const found = await app.fetch("/api/admin/sources/example", { headers: { cookie: admin } });
+    if (found.status === 404) return null;
+    assert.equal(found.status, 200);
+    const source = (await found.json()) as ExampleSource;
+    // A folder that was just detected is private until an administrator says otherwise.
+    assert.equal(source.public, false);
+    assert.equal(source.missing, false);
+    if (!settings.public) return source;
+    assert.equal((await app.fetch("/api/admin/sources/example", json("PUT", { public: true }, { cookie: admin }))).status, 200);
+    return { ...source, public: true };
   };
+
+  const escaped = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
   // -------------------------------------------------------------------------
   // Template engine
@@ -168,8 +189,13 @@ export default function ({ test, assert }: Tests) {
     assert.equal((await post("/api/admin/readers", { username: "leo", password: "short" })).status, 400);
     assert.equal((await post("/api/admin/readers", { username: "leo", password: "leo-password" })).status, 201);
     assert.equal((await post("/api/admin/readers", { username: "leo", password: "leo-password" })).status, 409);
-    assert.equal((await post("/api/admin/sources", { alias: "folder-that-does-not-exist" })).status, 400);
-    assert.equal((await post("/api/admin/sources", { alias: "../secret" })).status, 400);
+    // Sources are not created through the API, and their rendering settings are not changed through it.
+    assert.equal((await post("/api/admin/sources", { alias: "example" })).status, 405);
+    for (const change of [{ render: [] }, { props: { title: "x" } }, {}]) {
+      assert.equal((await app.fetch("/api/admin/sources/example", json("PUT", change, { cookie: admin }))).status, 400);
+    }
+    assert.equal((await app.fetch("/api/admin/sources/does-not-exist", json("PUT", { public: true }, { cookie: admin }))).status, 404);
+    assert.equal((await app.fetch("/api/admin/sources/does-not-exist", { method: "DELETE", headers: { cookie: admin } })).status, 404);
     assert.equal((await app.fetch("/api/admin/config", json("PUT", { props: [1, 2] }, { cookie: admin }))).status, 400);
   });
 
@@ -184,9 +210,46 @@ export default function ({ test, assert }: Tests) {
     }
   });
 
+  test("sources: every folder of sites/sources/ is one, private, without being registered", { secrets }, async (app) => {
+    const admin = await createAdmin(app);
+    const list = (await (await app.fetch("/api/admin/sources", { headers: { cookie: admin } })).json()) as { items: { alias: string; public: boolean }[]; ignored: string[] };
+    // Only the folders inside sites/sources/: never sites/label/, nor sites/sources/ itself.
+    assert(!list.items.some((source) => source.alias === "label" || source.alias === "sources"));
+    assert(list.items.every((source) => !source.public));
+    assert(Array.isArray(list.ignored));
+    for (const alias of ["label", "sources", "does-not-exist"]) {
+      assert.equal((await app.fetch(`/api/admin/sources/${alias}`, { headers: { cookie: admin } })).status, 404, alias);
+    }
+    const example = await exampleSource(app, admin);
+    if (!example) return;
+    assert(list.items.some((source) => source.alias === "example"));
+    assert((await (await app.fetch("/admin/list-sources", { headers: { cookie: admin } })).text()).includes('href="/admin/edit-source?source=example"'));
+    // The reader's permission list offers it at once.
+    const leo = await createReader(app, admin);
+    assert((await (await app.fetch(`/admin/edit-reader?reader-id=${leo.id}`, { headers: { cookie: admin } })).text()).includes('name="sources" value="example"'));
+    // A folder that is still published cannot be removed: it would come back without its permissions.
+    assert.equal((await app.fetch("/api/admin/sources/example", { method: "DELETE", headers: { cookie: admin } })).status, 409);
+  });
+
+  test("source.json: read key by key, with a default for whatever is wrong", () => {
+    assert.equal(parseSourceConfig({ render: [".HTML", "css", "html"], props: { title: "Handbook" } }), { render: ["html", "css"], props: { title: "Handbook" }, problems: [] });
+    assert.equal(parseSourceConfig({}), { render: ["html"], props: {}, problems: [] });
+    // An empty list turns rendering off.
+    assert.equal(parseSourceConfig({ render: [] }).render, []);
+    for (const broken of [null, [], "html", 3]) {
+      const config = parseSourceConfig(broken);
+      assert.equal([config.render, config.props, config.problems.length], [["html"], {}, 1]);
+    }
+    const wrong = parseSourceConfig({ render: "html", props: [1], public: true });
+    assert.equal([wrong.render, wrong.props, wrong.problems.length], [["html"], {}, 3]);
+    assert.equal(parseSourceConfig({ render: ["html", "../x"] }).render, ["html"]);
+    assert.equal(parseSourceConfig({ render: Array.from({ length: 31 }, (_, index) => `e${index}`) }).problems.length, 1);
+    assert.equal(parseSourceConfig({ props: { big: "x".repeat(70_000) } }).props, {});
+  });
+
   test("private source: sign-in with return, no access, and aliases that do not reveal themselves", { secrets }, async (app) => {
     const admin = await createAdmin(app);
-    if (!(await registerExample(app, admin))) return;
+    if (!(await exampleSource(app, admin))) return;
     const page = "/reader/view/example/index.html?page=7";
     const login = `/reader/?next=${encodeURIComponent(page)}`;
 
@@ -221,32 +284,34 @@ export default function ({ test, assert }: Tests) {
 
   test("props: platform < source < reader, and credentials never reach the template", { secrets }, async (app) => {
     const admin = await createAdmin(app);
-    await app.fetch("/api/admin/config", json("PUT", { props: { title: "From the platform", theme: "light" } }, { cookie: admin }));
-    if (!(await registerExample(app, admin, { public: true, props: { title: "From the <source>" } }))) return;
+    await app.fetch("/api/admin/config", json("PUT", { props: { title: "From the <platform>", theme: "light" } }, { cookie: admin }));
+    const example = await exampleSource(app, admin, { public: true });
+    if (!example) return;
 
-    // Visitor on a public source: platform and source only.
+    // Visitor on a public source: the platform props, and over them the props of the folder's source.json.
+    const title = typeof example.props.title === "string" ? example.props.title : "From the <platform>";
     const visitor = await (await app.fetch("/reader/view/example/", { headers: { "accept-language": "en-GB" } })).text();
-    assert(visitor.includes("<h1>From the &lt;source&gt;</h1>"));
-    assert(visitor.includes("Browser language: en-GB"));
-    assert(visitor.includes("Inside a raw block, {{ this }} and {% this %}"));
-    assert(!visitor.includes("the <strong>dark</strong> theme"));
+    if (example.render.includes("html")) {
+      assert(visitor.includes(`<h1>${escaped(title)}</h1>`));
+      assert(visitor.includes("Browser language: en-GB"));
+      assert(visitor.includes("Inside a raw block, {{ this }} and {% this %}"));
+      assert(!visitor.includes("the <strong>dark</strong> theme"));
+    }
+    // The settings file is for the system: no reader receives it.
+    assert.equal((await app.fetch("/reader/view/example/source.json")).status, 404);
 
     const leo = await createReader(app, admin);
     await app.fetch("/api/reader/props", json("PUT", { props: { title: "From the reader", theme: "dark", notices: ["one", "two"] } }, { cookie: leo.cookie }));
     const reader = await (await app.fetch("/reader/view/example/", { headers: { cookie: leo.cookie } })).text();
+    if (!example.render.includes("html")) return;
     assert(reader.includes("<h1>From the reader</h1>"));
     assert(reader.includes("the <strong>dark</strong> theme"));
     assert(reader.includes("2. two"));
-
-    // An empty `render` list turns the engine off: the file arrives as written.
-    await app.fetch("/api/admin/sources/example", json("PUT", { render: [] }, { cookie: admin }));
-    const raw = await (await app.fetch("/reader/view/example/", { headers: { cookie: leo.cookie } })).text();
-    assert(raw.includes('{{ props.title | default: "Gatefold example" }}'));
   });
 
   test("files: a folder becomes index.html, what is not a template stays intact, an address that leaves the folder is refused", { secrets }, async (app) => {
     const admin = await createAdmin(app);
-    if (!(await registerExample(app, admin, { public: true }))) return;
+    if (!(await exampleSource(app, admin, { public: true }))) return;
     assert.equal((await app.fetch("/reader/view/example")).headers.get("location"), "/reader/view/example/");
     assert.equal((await app.fetch("/reader/view/example/about")).headers.get("location"), "/reader/view/example/about/");
     assert((await (await app.fetch("/reader/view/example/about/")).text()).includes("About this example"));
@@ -267,7 +332,7 @@ export default function ({ test, assert }: Tests) {
 
   test("the reader API serves files with a key and respects the permission", { secrets }, async (app) => {
     const admin = await createAdmin(app);
-    if (!(await registerExample(app, admin))) return;
+    if (!(await exampleSource(app, admin))) return;
     const leo = await createReader(app, admin);
     const { key } = (await (await app.fetch("/api/reader/api-keys", { method: "POST", headers: { cookie: leo.cookie } })).json()) as { key: string };
     const headers = { authorization: `Bearer ${key}` };
@@ -280,8 +345,8 @@ export default function ({ test, assert }: Tests) {
     assert(!(await file.text()).includes(key));
     assert.equal(await (await app.fetch("/api/reader/sources", { headers })).json(), { items: [{ alias: "example", public: false }] });
 
-    // Removing the source deletes its settings and permissions.
-    assert.equal((await app.fetch("/api/admin/sources/example", { method: "DELETE", headers: { cookie: admin } })).status, 200);
+    // Revoking the permission closes the source again.
+    await app.fetch(`/api/admin/readers/${leo.id}`, json("PUT", { sources: [] }, { cookie: admin }));
     assert.equal((await app.fetch("/api/reader/view/example/index.html", { headers })).status, 403);
     const detail = (await (await app.fetch(`/api/admin/readers/${leo.id}`, { headers: { cookie: admin } })).json()) as { allowed: string[] };
     assert.equal(detail.allowed, []);
@@ -291,7 +356,7 @@ export default function ({ test, assert }: Tests) {
     const cookie = await createAdmin(app);
     const leo = await createReader(app, cookie);
     const pages = [
-      "/admin/home", "/admin/config", "/admin/list-sources", "/admin/create-source", "/admin/list-readers?q=le", "/admin/create-reader",
+      "/admin/home", "/admin/config", "/admin/list-sources", "/admin/list-readers?q=le", "/admin/create-reader",
       `/admin/edit-reader?reader-id=${leo.id}`, "/admin/list-admins", "/admin/create-admin", "/admin/api-keys",
     ];
     for (const path of pages) {
@@ -301,6 +366,16 @@ export default function ({ test, assert }: Tests) {
     }
     for (const path of ["/reader/home", "/reader/config", "/reader/api-keys"]) {
       assert.equal((await app.fetch(path, { headers: { cookie: leo.cookie } })).status, 200, path);
+    }
+    // The source page changes the visibility, and nothing else.
+    if (await exampleSource(app, cookie)) {
+      const edit = await (await app.fetch("/admin/edit-source?source=example", { headers: { cookie } })).text();
+      assert(edit.includes("sites/sources/example/source.json") && !edit.includes('name="props"') && !edit.includes('name="render"'));
+      const published = await app.fetch("/admin/edit-source?source=example", { method: "POST", headers: { cookie }, body: new URLSearchParams({ action: "save", public: "on" }) });
+      assert((published.headers.get("location") ?? "").startsWith("/admin/edit-source?source=example&ok="));
+      assert.equal((await app.fetch("/reader/view/example/style.css")).status, 200);
+      const kept = await app.fetch("/admin/edit-source?source=example", { method: "POST", headers: { cookie }, body: new URLSearchParams({ action: "delete" }) });
+      assert((kept.headers.get("location") ?? "").includes("error="));
     }
     const saved = await app.fetch("/admin/config", { method: "POST", headers: { cookie }, body: new URLSearchParams({ props: '{"site": "my.site"}' }) });
     assert((saved.headers.get("location") ?? "").startsWith("/admin/config?ok="));
@@ -336,11 +411,7 @@ export default function ({ test, assert }: Tests) {
     assert(signIn.includes("/label/theme.css") && signIn.indexOf("/label/theme.css") < signIn.indexOf("/label/app.css"));
     assert(signIn.includes("<title>Sign in · "));
 
-    // Sources come from sites/sources/ only: neither the label folder nor a missing folder can be registered.
-    const admin = await createAdmin(app);
-    for (const alias of ["label", "sources", "does-not-exist"]) {
-      assert.equal((await app.fetch("/api/admin/sources", json("POST", { alias }, { cookie: admin }))).status, 400, alias);
-    }
+    // Sources come from sites/sources/ only: the label folder is not one.
     assert.equal((await app.fetch("/reader/view/label/theme.css")).status, 303);
   });
 

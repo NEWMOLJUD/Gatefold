@@ -2,10 +2,10 @@
 // same operation of `core.ts` that the API calls.
 import type { Server } from "../deps/server.ts";
 import {
-  type Ctx, HttpError, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Statement, type UserRef, accountQueries, accountsPage,
-  apiKeys, apiKeysQuery, createAccount, createApiKey, createSource, deleteAccount, deleteApiKey, deleteSource,
+  type Ctx, HttpError, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, accountQueries, accountsPage,
+  apiKeys, apiKeysQuery, createAccount, createApiKey, deleteAccount, deleteApiKey, deleteSource,
   identify, listAccountsQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
-  readableSourcesQuery, redirect, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, updateAccount, updateSource,
+  readableSourcesQuery, redirect, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import { JS_PATH, type PageOptions, type Safe, alert, asset, badge, card, date, empty, field, html, icon, page, pager } from "./html.ts";
 import { labelFile, loadLabel } from "./label.ts";
@@ -48,6 +48,9 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
+/** How to publish a source, said the same way wherever there is none yet. */
+const ADD_SOURCE = html`Add a folder to <code>sites/sources/</code> in the repository and publish: it shows up here on its own, private until you decide who reads it.`;
+
 function propsArea(value: unknown): Safe {
   return html`<textarea id="props" name="props" spellcheck="false" data-json>${pretty(value)}</textarea>`;
 }
@@ -80,11 +83,16 @@ export function registerPages(server: Server, ctx: Ctx): void {
     });
   };
 
-  /** Requires the session of the role; without it, goes to sign-in. The reads share the same trip to the database. */
+  /**
+   * Requires the session of the role; without it, goes to sign-in. The reads
+   * share the same trip to the database. For administrators, the folders of
+   * sites/sources/ get their rows before anything is read.
+   */
   const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const { session } = await identify(ctx, request, role, { allowKey: false, reads });
+    const sync = role === "admin" ? [syncSources(ctx)] : [];
+    const { session } = await identify(ctx, request, role, { allowKey: false, reads: (user) => [...sync, ...(reads?.(user) ?? [])] });
     if (!session) throw new Reply(redirect(LOGIN[role].path));
-    return session;
+    return { ...session, rows: session.rows.slice(sync.length) };
   };
 
   const done = (path: string, message: string): Response => redirect(`${path}${path.includes("?") ? "&" : "?"}ok=${encodeURIComponent(message)}`);
@@ -180,14 +188,14 @@ ${keys.map((key) => html`<tr><td><code>${key.id}</code></td><td>${date(key.creat
     const stat = (href: string, label: string, symbol: "folder" | "users" | "shield", value: number, note: string): Safe =>
       html`<a class="stat" href="${href}"><span class="stat-top">${label}${icon(symbol)}</span><b>${value}</b><small>${note}</small></a>`;
     const body = html`
-${sources === 0 ? alert("info", html`<p><strong>No source is registered yet.</strong> Nobody can read a folder of <code>sites/sources/</code> until it is registered. <a href="/admin/create-source">Register a source</a></p>`) : ""}
+${sources === 0 ? alert("info", html`<p><strong>There is no source yet.</strong> ${ADD_SOURCE}</p>`) : ""}
 <div class="stats">
 ${stat("/admin/list-sources", "Sources", "folder", sources, `${Number(counts.public_sources ?? 0)} public · ${sources - Number(counts.public_sources ?? 0)} private`)}
 ${stat("/admin/list-readers", "Readers", "users", Number(counts.readers ?? 0), "Accounts that can sign in to read")}
 ${stat("/admin/list-admins", "Administrators", "shield", Number(counts.admins ?? 0), "Accounts that manage this installation")}
 </div>
 ${card(html`<div class="links">
-<a href="/admin/create-source">${icon("folder")}<div><strong>Register a source</strong><span>Publish a folder of <code>sites/sources/</code> and choose who reads it.</span></div></a>
+<a href="/admin/list-sources">${icon("folder")}<div><strong>Manage sources</strong><span>Choose who reads each folder of <code>sites/sources/</code>.</span></div></a>
 <a href="/admin/create-reader">${icon("users")}<div><strong>Add a reader</strong><span>Create an account and grant it private sources.</span></div></a>
 <a href="/admin/config">${icon("sliders")}<div><strong>Edit platform props</strong><span>Values available to every template of every source.</span></div></a>
 <a href="/admin/api-keys">${icon("key")}<div><strong>Create an API key</strong><span>Automate everything this console does.</span></div></a>
@@ -220,7 +228,9 @@ ${card(html`<div class="links">
     const list = await sourcesPage(ctx, session.rows[0] ?? [], url.searchParams);
     const value = (name: string): string => url.searchParams.get(name) ?? "";
     const filtered = ["q", "created_from", "created_to", "min_readers"].some((name) => value(name) !== "");
-    const body = card(html`<form method="get" class="filters">
+    const body = html`${list.ignored.length === 0 ? "" : alert("warn", html`<p><strong>${plural(list.ignored.length, "folder is", "folders are")} not a source:</strong>
+${list.ignored.map((name, index) => html`${index === 0 ? "" : ", "}<code>${name}</code>`)}. A source folder is named with lowercase letters, digits and hyphens only. Rename it in the repository and publish again.</p>`)}
+${card(html`<form method="get" class="filters">
 ${field("q", "Alias starts with", html`<input type="text" id="q" name="q" value="${value("q")}">`)}
 ${field("from", "Created from", html`<input type="date" id="from" name="created_from" value="${value("created_from")}">`)}
 ${field("to", "Created until", html`<input type="date" id="to" name="created_to" value="${value("created_to")}">`)}
@@ -229,8 +239,7 @@ ${field("min", "Minimum readers", html`<input type="number" id="min" name="min_r
 ${list.items.length === 0
   ? filtered
     ? empty("folder", "No sources match these filters", "Change or clear the filters to see more.", html`<a class="btn" href="/admin/list-sources">Clear filters</a>`)
-    : empty("folder", "No sources yet", html`A source is a folder of <code>sites/sources/</code> that you publish to readers.`,
-        html`<a class="btn btn-primary" href="/admin/create-source">Register the first source</a>`)
+    : empty("folder", "No sources yet", ADD_SOURCE)
   : html`<div class="table-wrap"><table><thead><tr><th>Source</th><th>Visibility</th><th class="num">Readers</th><th>Rendered</th><th>Created (UTC)</th><th></th></tr></thead><tbody>
 ${list.items.map((source) => html`<tr><td><strong><a href="/admin/edit-source?source=${source.alias}">${source.alias}</a></strong>
 ${source.missing ? html` ${badge("Folder missing", "danger")}` : ""}</td>
@@ -239,56 +248,46 @@ ${source.missing ? html` ${badge("Folder missing", "danger")}` : ""}</td>
 <td>${source.render.length === 0 ? html`<span class="muted">Nothing</span>` : source.render.map((extension) => html`<span class="chip">${extension}</span>`)}</td>
 <td>${date(source.created_at)}</td>
 <td class="end"><a class="btn btn-sm" href="/reader/view/${source.alias}/">Open ${icon("external")}</a></td></tr>`)}</tbody></table></div>`}
-${pager(url, list.page, list.hasNext)}`, { flush: true });
-    return adminPage(session, url, {
-      title: "Sources", subtitle: "Folders of sites/sources/ published to readers.", body, active: "/admin/list-sources",
-      actions: html`<a class="btn btn-primary" href="/admin/create-source">${icon("plus")}Register source</a>`,
-    });
+${pager(url, list.page, list.hasNext)}`, { flush: true })}`;
+    return adminPage(session, url, { title: "Sources", subtitle: "Every folder of sites/sources/ is a source. New ones start private.", body, active: "/admin/list-sources" });
   });
 
-  const sourceFields = (source: { public: boolean; props: unknown; render: string[] }): Safe => html`
-${card(html`<label class="check"><input type="checkbox" name="public" ${source.public ? "checked" : ""}>
-<span><strong>Public source</strong><span class="hint">Anyone on the internet can open <strong>every file of the folder</strong>, without signing in.
-Leave it off to allow only the readers you choose.</span></span></label>`, { title: "Visibility", class: "narrow" })}
-${card(html`${field("render", "Rendered extensions", html`<input type="text" id="render" name="render" value="${source.render.join(", ")}" placeholder="html">`,
-  "Separated by commas. Files with these extensions go through the template engine. Leave empty to turn rendering off.")}
-<div class="field">${alert("warn", html`Careful with <code>js</code> and <code>css</code>: files that already contain <code>{{</code> or <code>{%</code>
-(Vue or Handlebars code, for instance) would be interpreted and may break. Protect those parts with
-<code>{% raw %}…{% endraw %}</code>. Images, PDFs, fonts and videos are never rendered.`)}</div>`, { title: "Rendering", class: "narrow" })}
-${card(field("props", "Props (JSON object)", propsArea(source.props),
-  "Win over the platform props; the reader's own props win over these."), { title: "Source props", class: "narrow" })}`;
-
-  route("GET", "/admin/create-source", async (request, url) => {
-    const session = await enter(request, "admin");
-    const body = html`<form method="post">${card(field("alias", "Folder of sites/sources/",
-      html`<input type="text" id="alias" name="alias" required pattern="[a-z0-9-]+" maxlength="100" autocomplete="off" spellcheck="false" placeholder="example">`,
-      html`Type the name of a subfolder of <code>sites/sources/</code> that has an <code>index.html</code>. It becomes the address: <code>/reader/view/&lt;folder&gt;/</code>.`), { title: "Folder", class: "narrow" })}
-${sourceFields({ public: false, props: {}, render: ["html"] })}
-<div class="narrow actions"><button class="btn btn-primary">Register source</button><a class="btn" href="/admin/list-sources">Cancel</a></div></form>`;
-    return adminPage(session, url, { title: "Register source", crumbs: [SOURCES], body, active: "/admin/list-sources" });
-  });
-
-  route("POST", "/admin/create-source", async (request) => {
-    await enter(request, "admin");
-    const form = await request.formData();
-    const alias = text(form, "alias");
-    await createSource(ctx, { alias, public: form.has("public"), props: text(form, "props"), render: text(form, "render") });
-    return done(`/admin/edit-source?source=${encodeURIComponent(alias)}`, "Source registered.");
-  });
+  /** `render` and `props` are shown, not edited: they are written in the source's own folder. */
+  const sourceSettingsCards = (source: Source): Safe => {
+    const file = html`<code>sites/sources/${source.alias}/source.json</code>`;
+    const origin = source.origin === "file"
+      ? html`Read from ${file}. To change it, edit the file in the repository and publish again.`
+      : source.origin === "legacy"
+        ? html`These values were saved by an older version of this console and stay in use until the source has a ${file}. Copy them into that file to keep them with the content.`
+        : html`This source has no ${file}, so the defaults are in use. Create the file in the repository to change them.`;
+    return html`${card(html`<div class="field"><span class="label">Rendered extensions</span>
+<p>${source.render.length === 0 ? html`<span class="muted">Nothing: rendering is off.</span>` : source.render.map((extension) => html`<span class="chip">${extension}</span>`)}</p>
+<p class="hint">Files with these extensions go through the template engine. Images, PDFs, fonts and videos are never rendered.</p></div>
+<div class="field"><span class="label">Props</span><pre><code>${pretty(source.props)}</code></pre>
+<p class="hint">Win over the platform props; the reader's own props win over these.</p></div>
+<div class="field">${alert(source.origin === "legacy" ? "warn" : "info", origin)}</div>
+${source.problems.length === 0 ? "" : html`<div class="field">${alert("danger", html`<p><strong>Problems in source.json:</strong></p><ul>${source.problems.map((problem) => html`<li>${problem}</li>`)}</ul>`)}</div>`}`,
+      { title: "Rendering and props", description: "Set in the source's folder, not here.", class: "narrow" })}
+${source.origin === "file" ? "" : card(html`<pre><code>${pretty({ render: source.render, props: source.props })}</code></pre>`,
+      { title: "A source.json to start from", description: "The settings in use today, ready to save as that file.", class: "narrow" })}`;
+  };
 
   route("GET", "/admin/edit-source", async (request, url) => {
     const alias = url.searchParams.get("source") ?? "";
     const session = await enter(request, "admin", () => [sourceQuery(alias)]);
     const source = await oneSource(ctx, session.rows[0] ?? []);
     const body = html`
-${source.missing ? alert("danger", html`The folder <code>sites/sources/${source.alias}/</code> (with its <code>index.html</code>) is not in this publication, so the source answers "not found".
-Put the folder back in the repository or remove this source.`) : ""}
-<form method="post"><input type="hidden" name="action" value="save">${sourceFields(source)}
-<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
-<br>
-${card(html`<div class="split"><div><strong>Remove this source</strong><p class="muted">Deletes its settings and permissions. The files stay in the repository folder.</p></div>
-<form method="post" data-confirm="Remove the source ${source.alias}? Readers lose access at once.">
-<input type="hidden" name="action" value="delete"><button class="btn btn-danger">Remove source</button></form></div>`, { class: "narrow danger-zone" })}`;
+${source.missing ? alert("danger", html`The folder <code>sites/sources/${source.alias}/</code> is not in this publication, so the source answers "not found".
+Put the folder back in the repository, or remove this source below.`) : ""}
+<form method="post"><input type="hidden" name="action" value="save">
+${card(html`<label class="check"><input type="checkbox" name="public" ${source.public ? "checked" : ""}>
+<span><strong>Public source</strong><span class="hint">Anyone on the internet can open <strong>every file of the folder</strong>, without signing in.
+Leave it off to allow only the readers you choose.</span></span></label>`, { title: "Visibility", class: "narrow", footer: html`<button class="btn btn-primary">Save visibility</button>` })}</form>
+${source.missing ? "" : sourceSettingsCards(source)}
+${source.missing ? html`<br>
+${card(html`<div class="split"><div><strong>Remove this source</strong><p class="muted">Deletes its visibility and its permissions. If the folder is published again, it comes back as a new private source.</p></div>
+<form method="post" data-confirm="Remove the source ${source.alias}? Its permissions are deleted.">
+<input type="hidden" name="action" value="delete"><button class="btn btn-danger">Remove source</button></form></div>`, { class: "narrow danger-zone" })}` : ""}`;
     return adminPage(session, url, {
       title: source.alias,
       subtitle: html`${source.public ? badge("Public", "warn") : badge("Private", "ok")} &nbsp;<a href="/admin/list-readers?source=${source.alias}">${plural(source.readers, "reader", "readers")} with permission</a>`,
@@ -305,8 +304,8 @@ ${card(html`<div class="split"><div><strong>Remove this source</strong><p class=
       await deleteSource(ctx, alias);
       return done("/admin/list-sources", "Source removed.");
     }
-    await updateSource(ctx, alias, { public: form.has("public"), props: text(form, "props"), render: text(form, "render") });
-    return done(`/admin/edit-source?source=${encodeURIComponent(alias)}`, "Source saved.");
+    await updateSource(ctx, alias, { public: form.has("public") });
+    return done(`/admin/edit-source?source=${encodeURIComponent(alias)}`, "Visibility saved.");
   });
 
   // Readers and administrators: the same screens, plus the sources on the reader.
@@ -380,7 +379,7 @@ ${role === "admin" ? html`<div class="field">${alert("warn", "An administrator c
       const all = session.rows[3] ?? [];
       const sources = role === "reader"
         ? card(all.length === 0
-            ? html`<p class="muted">No sources registered yet. <a href="/admin/create-source">Register a source</a></p>`
+            ? html`<p class="muted">There is no source yet. ${ADD_SOURCE}</p>`
             : html`${all.map((row) => row.public === 1
                 ? html`<label class="check"><input type="checkbox" checked disabled><span>${String(row.alias)} ${badge("Public", "warn")}<span class="hint">Everyone can read it.</span></span></label>`
                 : html`<label class="check"><input type="checkbox" name="sources" value="${String(row.alias)}" ${allowed.has(String(row.alias)) ? "checked" : ""}><span>${String(row.alias)}</span></label>`)}`,

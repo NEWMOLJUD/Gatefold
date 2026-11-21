@@ -70,13 +70,21 @@ function assets(sitesDirectory: string, publicDirectory: string): Record<string,
   return {};
 }
 
-/** Direct subfolders of `sites/`, sorted. Hidden folders are left out. */
-export function siteFolders(): string[] {
-  if (!existsSync(SITES)) return [];
-  return readdirSync(SITES, { withFileTypes: true })
+function subfolders(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => entry.name)
     .sort();
+}
+
+/**
+ * The folders of `sites/`, two levels deep: `""` lists its direct subfolders,
+ * and each of their names lists its own. Hidden folders are left out.
+ */
+export function siteFolders(): Record<string, string[]> {
+  const folders: Record<string, string[]> = { "": existsSync(SITES) ? subfolders(SITES) : [] };
+  for (const name of folders[""]!) folders[name] = subfolders(join(SITES, name));
+  return folders;
 }
 
 /** Generated module the Worker imports to answer `deps.sites.folders()`. */
@@ -88,7 +96,7 @@ export const SITES_MANIFEST = join(STATE, "sites.ts");
  * by every local start.
  */
 export function writeSitesManifest(): void {
-  const wanted = `// Generated from the subfolders of sites/. Do not edit.\nexport default ${JSON.stringify(siteFolders())} as string[];\n`;
+  const wanted = `// Generated from the subfolders of sites/. Do not edit.\nexport default ${JSON.stringify(siteFolders())} as Record<string, string[]>;\n`;
   if (existsSync(SITES_MANIFEST) && readFileSync(SITES_MANIFEST, "utf8") === wanted) return;
   mkdirSync(STATE, { recursive: true });
   writeFileSync(SITES_MANIFEST, wanted);
