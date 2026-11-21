@@ -91,10 +91,10 @@ You can publish from the GitHub and Cloudflare websites alone, with nothing inst
 
 **2. Generate the three keys.** The app needs three secrets, and each one is simply a long random text. Generate **three different values**, one for each name in the [table above](#quick-start):
 
-- [Bitwarden Password Generator](https://bitwarden.com/password-generator/)
-- [1Password Password Generator](https://1password.com/password-generator/)
+- [IT Tools token generator](https://it-tools.tech/token-generator?length=64&symbols=false): this link opens it already set to 64 letters and digits. Press **Copy**, then **Refresh** for the next key.
+- [RandomKeygen](https://randomkeygen.com/): press **256-bit Hex** and copy one of the values shown.
 
-Both generate the value inside your browser. Set the length to **40 characters or more** and use only letters and digits, so nothing is lost when you copy and paste.
+Both are open tools that generate the value inside your browser, with nothing to sign up for. If you use another generator, ask for **40 characters or more** and only letters and digits, so nothing is lost when you copy and paste.
 
 Prefer not to use a website? Open your browser's console (press **F12**, then **Console**), paste this line and press Enter. Run it three times, once per key, and copy the text between the quotes:
 
