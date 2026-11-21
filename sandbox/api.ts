@@ -5,6 +5,10 @@
 //   /api/root/*     root password in the X-Root-Password header
 //   /api/reader/invite/:token   no sign-in: the access link is the credential
 //
+// An administrator who turned on two-step verification signs in with
+// `username`, `password` and `code` (the 6 digits of their authenticator app,
+// as text). API keys are not affected: a key is its own credential.
+//
 // The key goes in the `Authorization: Bearer <key>` header. Without valid
 // authentication the answer is 401; the API never redirects to the login.
 import type { Server } from "../deps/server.ts";
@@ -12,10 +16,11 @@ import {
   type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
   apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
   identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, changeOwnPassword, exportAuditQueries, policy, setPolicy, setSuspended, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
-  readableSourcesQuery, requireRoot, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
+  readableSourcesQuery, requireRoot, revokeInvite, confirmTwoStep, disableTwoStep, resetTwoStep, startTwoStep, twoStep, twoStepQuery, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
-import type { Role } from "./security.ts";
+import { loadLabel } from "./label.ts";
+import { type Role, mfaUrl } from "./security.ts";
 import { view } from "./view.ts";
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
@@ -118,6 +123,33 @@ export function registerApi(server: Server, ctx: Ctx): void {
   }
 
   // Administrator ------------------------------------------------------------
+
+  // Two-step verification of one's own account, which each administrator turns on or leaves off. With the
+  // session cookie only, never with a key. Turning it on takes two calls: `setup` (`current_password`) answers
+  // with the key for the authenticator app, and `confirm` (`code`) proves the app has it.
+  route("GET", "/api/admin/two-step", async (request) => {
+    const session = await enter(request, "admin", (user) => [twoStepQuery(user)]);
+    const { enabled, enabled_at, pending } = await twoStep(ctx, session, session.rows[0]);
+    return { enabled, enabled_at, pending };
+  });
+
+  // The answer carries `secret`, the key to type into the app, and `url`, the same as an otpauth:// address.
+  route("POST", "/api/admin/two-step/setup", async (request) => {
+    const session = await enter(request, "admin");
+    const { secret } = await startTwoStep(ctx, session, await body(request));
+    return { secret, url: mfaUrl((await loadLabel(ctx.sites)).name, session.user.username, secret) };
+  });
+
+  route("POST", "/api/admin/two-step/confirm", async (request) => {
+    await confirmTwoStep(ctx, await enter(request, "admin"), await body(request));
+    return { ok: true };
+  });
+
+  // `current_password` when it is on; nothing when it is only a setup never confirmed.
+  route("POST", "/api/admin/two-step/disable", async (request) => {
+    await disableTwoStep(ctx, await enter(request, "admin"), await optionalBody(request));
+    return { ok: true };
+  });
 
   route("GET", "/api/admin/config", async (request) => {
     const session = await enter(request, "admin", () => [PLATFORM_PROPS]);
@@ -304,6 +336,13 @@ export function registerApi(server: Server, ctx: Ctx): void {
   route("PUT", "/api/root/admins/:id", async (request, _url, params) => {
     await requireRoot(ctx, request);
     await updateAccount(ctx, rootActor(ipOf(ctx, request)), "admin", params.id ?? "", { password: (await body(request)).password });
+    return { ok: true };
+  });
+
+  // For an administrator who lost their phone: their two-step verification is turned off, and they sign in with the password alone.
+  route("DELETE", "/api/root/admins/:id/two-step", async (request, _url, params) => {
+    await requireRoot(ctx, request);
+    await resetTwoStep(ctx, rootActor(ipOf(ctx, request)), params.id ?? "");
     return { ok: true };
   });
 

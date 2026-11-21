@@ -7,7 +7,7 @@ import { type Actor, type AuditEntry, type Found, SYSTEM, hourOf, record, record
 import { type Config, clientIp, publicOrigin, sameOrigin } from "./config.ts";
 import {
   type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashAttempt, hashInvite, hashPassword,
-  newApiKey, newInviteToken, randomId, readCookie, safeEqual, sessionCookie, signToken, verifyPassword, verifyToken,
+  matchMfaCode, newApiKey, newInviteToken, newMfaSecret, openMfaSecret, randomId, readCookie, safeEqual, sealMfaSecret, sessionCookie, signToken, verifyPassword, verifyToken,
 } from "./security.ts";
 import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, loadSourceConfig } from "./source-config.ts";
 import { type Limit, cleanupAttempts, countAttempts, forgetAttempts, overLimit, readAttempts, uncountAttempts } from "./throttle.ts";
@@ -144,6 +144,13 @@ export const MIGRATIONS = [
   `CREATE TABLE guards (
   ok INTEGER NOT NULL CONSTRAINT guard_refused CHECK (ok = 1)
 )`,
+  // Two-step verification, which each administrator turns on for themselves.
+  // `mfa_secret` is the key of their authenticator app, encrypted (see
+  // security.ts); it is in use once `mfa_enabled_at` is set. `mfa_last_step`
+  // is the last code accepted, so that no code is accepted twice.
+  `ALTER TABLE admins ADD COLUMN mfa_secret TEXT`,
+  `ALTER TABLE admins ADD COLUMN mfa_enabled_at INTEGER`,
+  `ALTER TABLE admins ADD COLUMN mfa_last_step INTEGER NOT NULL DEFAULT 0`,
 ];
 
 /** How long a login session lasts. */
@@ -492,7 +499,7 @@ export async function login(ctx: Ctx, request: Request, role: Role, input: Input
   ];
   const [counted = [], users = []] = await ctx.db.batch([
     countAttempts(limits, now),
-    [`SELECT id, username, password_hash, suspended_at FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name],
+    [`SELECT id, username, password_hash, suspended_at${role === "admin" ? ", mfa_secret, mfa_enabled_at, mfa_last_step" : ""} FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name],
   ]);
   const row = users[0];
   // What was typed is only written down when it is the name of an account: people type passwords into the wrong field.
@@ -513,14 +520,46 @@ export async function login(ctx: Ctx, request: Request, role: Role, input: Input
   }
   const sid = randomId();
   const id = String(row.id);
+  // Two-step verification, for the administrators who turned it on: the password was right, now the code.
+  let step: number | null = null;
+  if (role === "admin" && typeof row.mfa_enabled_at === "number") {
+    const code = typeof input.code === "string" ? input.code.replace(/\s+/g, "").slice(0, 16) : "";
+    // No code at all is not a guess: the attempt is taken back, and nothing is written down.
+    if (code === "") {
+      await ctx.db.batch([uncountAttempts(limits)]);
+      throw new HttpError(401, MFA_CODE_NEEDED);
+    }
+    const secret = await openMfaSecret(master, String(row.mfa_secret ?? ""), id);
+    step = secret === null ? null : await matchMfaCode(secret, code, now);
+    // A code that was already used is refused like a wrong one: whoever saw it typed cannot use it again.
+    if (step === null || step <= Number(row.mfa_last_step)) await wrongMfaCode(ctx, actor);
+  }
   const token = await signToken(ctx.secrets.get(SECRET_SIGNING), { sid, sub: id, role, exp: Math.floor((now + SESSION_MS) / 1000) });
-  await ctx.db.batch([
-    [`INSERT INTO sessions (id, ${TABLE[role].column}, created_at, expires_at) VALUES (?, ?, ?, ?)`, sid, id, now, now + SESSION_MS],
-    record(actor, "login", null),
-    uncountAttempts(limits),
-    forgetAttempts(pair),
-  ]);
+  try {
+    await ctx.db.batch([
+      // Of two requests with the same code, only the first finds it unused.
+      ...(step === null ? [] : [
+        guard("NOT EXISTS (SELECT 1 FROM admins WHERE id = ? AND mfa_last_step < ?)", id, step),
+        ["UPDATE admins SET mfa_last_step = ? WHERE id = ?", step, id] as Statement,
+      ]),
+      [`INSERT INTO sessions (id, ${TABLE[role].column}, created_at, expires_at) VALUES (?, ?, ?, ?)`, sid, id, now, now + SESSION_MS],
+      record(actor, "login", null, step === null ? {} : { two_step: true }),
+      uncountAttempts(limits),
+      forgetAttempts(pair),
+    ]);
+  } catch (error) {
+    if (guardRefused(error)) await wrongMfaCode(ctx, actor);
+    throw error;
+  }
   return { cookie: sessionCookie(role, token, SESSION_MS / 1000), user: { id, username: String(row.username) } };
+}
+
+const MFA_CODE_NEEDED = "This account uses two-step verification. Sign in again with your password and the 6-digit code from your authenticator app.";
+
+/** The attempt stays counted: six digits are easy to guess for whoever is allowed to keep trying. */
+async function wrongMfaCode(ctx: Ctx, actor: Actor): Promise<never> {
+  await ctx.db.batch([record(actor, "login.failed", null, { reason: "wrong code" })]);
+  throw new HttpError(401, "The verification code is not right, or was already used. Wait for the next code in your authenticator app and try again.");
 }
 
 /** Deletes the cookie's session, if there is one, and returns the cookie that clears the browser. */
@@ -825,6 +864,8 @@ export interface Account {
   sources?: number;
   /** A suspended account keeps everything it has and cannot sign in or use its keys. */
   suspended: boolean;
+  /** Administrators only: signing in also asks for a code from their authenticator app. */
+  two_step?: boolean;
 }
 
 function toAccount(row: Row): Account {
@@ -835,6 +876,7 @@ function toAccount(row: Row): Account {
     suspended: row.suspended_at !== null && row.suspended_at !== undefined,
     ...(row.pending === undefined ? {} : { email: typeof row.email === "string" ? row.email : null, pending: row.pending === 1 }),
     ...(row.sources === undefined ? {} : { sources: Number(row.sources) }),
+    ...(row.mfa_enabled_at === undefined ? {} : { two_step: row.mfa_enabled_at !== null }),
   };
 }
 
@@ -854,7 +896,7 @@ export function listAccountsQuery(role: Role, filters: URLSearchParams): Stateme
     where.push("u.id IN (SELECT reader_id FROM permissions WHERE source_alias = ?)");
     params.push(source);
   }
-  const extra = role === "reader" ? `${READER_COLUMNS}, (SELECT COUNT(*) FROM permissions p WHERE p.reader_id = u.id) AS sources` : "";
+  const extra = role === "reader" ? `${READER_COLUMNS}, (SELECT COUNT(*) FROM permissions p WHERE p.reader_id = u.id) AS sources` : ", u.mfa_enabled_at";
   const order = role === "reader" ? "u.created_at DESC, u.id" : "u.username";
   return [
     `SELECT u.id, u.username, u.created_at, u.suspended_at${extra} FROM ${TABLE[role].table} u${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ` +
@@ -910,7 +952,7 @@ export const ACCOUNT_ROWS = { account: 0, keys: 1, allowed: 2, sources: 3, invit
 export function accountQueries(role: Role, id: string): Statement[] {
   const { table, column } = TABLE[role];
   const queries: Statement[] = [
-    [`SELECT u.id, u.username, u.created_at, u.suspended_at${role === "reader" ? READER_COLUMNS : ""} FROM ${table} u WHERE u.id = ?`, id],
+    [`SELECT u.id, u.username, u.created_at, u.suspended_at${role === "reader" ? READER_COLUMNS : ", u.mfa_enabled_at"} FROM ${table} u WHERE u.id = ?`, id],
     [`SELECT ${KEY_COLUMNS} FROM api_keys WHERE ${column} = ? ORDER BY created_at DESC`, id],
   ];
   if (role === "reader") {
@@ -1135,6 +1177,152 @@ export async function changeOwnPassword(ctx: Ctx, session: Session, input: Input
     [`DELETE FROM sessions WHERE ${column} = ? AND id <> ?`, user.id, session.sid],
     forgetAttempts(limits[0]!.key),
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// Two-step verification: optional, and each administrator's own choice
+// ---------------------------------------------------------------------------
+
+export interface TwoStep {
+  /** Signing in asks for a code. */
+  enabled: boolean;
+  enabled_at: number | null;
+  /** Setup was started and not finished: `secret` is waiting to be confirmed with a code. */
+  pending: boolean;
+  /** Only while `pending`: the key to add to the authenticator app. Once confirmed it is never shown again. */
+  secret?: string;
+}
+
+const MFA_COLUMNS = "mfa_secret, mfa_enabled_at";
+
+/** The signed-in administrator's own two-step verification, read with the session check. */
+export function twoStepQuery(user: UserRef): Statement {
+  return [`SELECT ${MFA_COLUMNS} FROM admins WHERE id = ${user.sql}`, ...user.params];
+}
+
+export async function twoStep(ctx: Ctx, session: Session, rows: Row[] | undefined): Promise<TwoStep> {
+  const row = rows?.[0];
+  const enabled_at = typeof row?.mfa_enabled_at === "number" ? row.mfa_enabled_at : null;
+  if (enabled_at !== null || typeof row?.mfa_secret !== "string") return { enabled: enabled_at !== null, enabled_at, pending: false };
+  const secret = await openMfaSecret(ctx.secrets.get(SECRET_MASTER), row.mfa_secret, session.user.id);
+  // A key that no longer opens (the master key changed) is as good as none: setup starts again.
+  return secret === null ? { enabled: false, enabled_at: null, pending: false } : { enabled: false, enabled_at: null, pending: true, secret };
+}
+
+function clearMfa(id: string): Statement {
+  return ["UPDATE admins SET mfa_secret = NULL, mfa_enabled_at = NULL, mfa_last_step = 0 WHERE id = ? RETURNING id", id];
+}
+
+/** Two-step verification belongs to whoever is signed in with their password: an API key cannot touch it. */
+function ownTwoStep(session: Session): { sid: string } {
+  if (session.role !== "admin") throw new HttpError(404, "Two-step verification is for administrator accounts.");
+  if (session.viaKey || session.sid === null) throw new HttpError(403, "Two-step verification is managed signed in with your password, not with an API key.");
+  return { sid: session.sid };
+}
+
+/**
+ * The current password, said again: someone who took over a session must not
+ * be able to turn two-step verification on (locking the owner out) or off.
+ * Wrong ones are counted together with those of `changeOwnPassword`.
+ */
+async function confirmOwnPassword(ctx: Ctx, session: Session, input: Input): Promise<Row> {
+  const { user, actor } = session;
+  const current = typeof input.current_password === "string" ? input.current_password.slice(0, 256) : "";
+  const limits: Limit[] = [{ key: `password:admin:${user.id}`, max: PASSWORD_CHANGE_ATTEMPTS }];
+  const [counted = [], accounts = []] = await ctx.db.batch([
+    countAttempts(limits, Date.now()),
+    [`SELECT password_hash, ${MFA_COLUMNS} FROM admins WHERE id = ?`, user.id],
+  ]);
+  const account = accounts[0];
+  if (!account) throw new HttpError(404, "User not found.");
+  if (overLimit(counted, limits, true)) throw new HttpError(429, "Too many attempts. Wait fifteen minutes and try again.");
+  if (!(await verifyPassword(ctx.secrets.get(SECRET_MASTER), current, String(account.password_hash)))) {
+    await ctx.db.batch([record(actor, "login.failed", null, { reason: "wrong current password" })]);
+    throw new HttpError(403, "The current password is not right.");
+  }
+  await ctx.db.batch([forgetAttempts(limits[0]!.key)]);
+  return account;
+}
+
+/**
+ * First half of turning it on: with the current password, a new key is made
+ * for the authenticator app. Nothing changes at sign-in until `confirmTwoStep`
+ * proves the app has the key. Starting again replaces a key never confirmed.
+ */
+export async function startTwoStep(ctx: Ctx, session: Session, input: Input): Promise<{ secret: string }> {
+  ownTwoStep(session);
+  const account = await confirmOwnPassword(ctx, session, input);
+  if (account.mfa_enabled_at !== null) throw new HttpError(409, "Two-step verification is already on. Turn it off first to set it up again.");
+  const { user, actor } = session;
+  const secret = newMfaSecret();
+  await ctx.db.batch([
+    record(actor, "mfa.setup", { type: "admin", id: user.id, name: user.username }),
+    ["UPDATE admins SET mfa_secret = ? WHERE id = ? AND mfa_enabled_at IS NULL", await sealMfaSecret(ctx.secrets.get(SECRET_MASTER), secret, user.id), user.id],
+  ]);
+  return { secret };
+}
+
+/**
+ * Second half: a code from the app turns it on. From here on, signing in asks
+ * for a code. Every other session of the account ends: they were opened
+ * without one.
+ */
+export async function confirmTwoStep(ctx: Ctx, session: Session, input: Input): Promise<void> {
+  const { sid } = ownTwoStep(session);
+  const { user, actor } = session;
+  const [row] = await ctx.db.query(`SELECT ${MFA_COLUMNS} FROM admins WHERE id = ?`, user.id);
+  if (row && row.mfa_enabled_at !== null) throw new HttpError(409, "Two-step verification is already on.");
+  const stored = typeof row?.mfa_secret === "string" ? row.mfa_secret : null;
+  const secret = stored === null ? null : await openMfaSecret(ctx.secrets.get(SECRET_MASTER), stored, user.id);
+  if (stored === null || secret === null) throw new HttpError(409, "Start the setup first: there is no key waiting to be confirmed.");
+  const now = Date.now();
+  const code = typeof input.code === "string" ? input.code.replace(/\s+/g, "").slice(0, 16) : "";
+  const step = await matchMfaCode(secret, code, now);
+  if (step === null) {
+    throw new HttpError(400, "The code is not right. Check that your phone's clock is set automatically, wait for the next code and try again.");
+  }
+  // Only the key that was just proved is turned on: a setup started again in the meantime is left alone.
+  const mine = "id = ? AND mfa_enabled_at IS NULL AND mfa_secret = ?";
+  const [, changed = []] = await ctx.db.batch([
+    recordFound(actor, "mfa.enabled", "admin", { from: `admins u WHERE u.${mine}`, params: [user.id, stored], id: "u.id", name: "u.username" }),
+    [`UPDATE admins SET mfa_enabled_at = ?, mfa_last_step = ? WHERE ${mine} RETURNING id`, now, step, user.id, stored],
+    ["DELETE FROM sessions WHERE admin_id = ? AND id <> ? AND EXISTS (SELECT 1 FROM admins WHERE id = ? AND mfa_enabled_at = ?)", user.id, sid, user.id, now],
+  ]);
+  if (changed.length === 0) throw new HttpError(409, "The setup changed while you were confirming it. Open Your account and try again.");
+}
+
+/**
+ * Turns it off, or gives up a setup that was never confirmed. Turning off what
+ * is on asks for the current password; a lost phone is root's to solve (see
+ * `resetTwoStep`).
+ */
+export async function disableTwoStep(ctx: Ctx, session: Session, input: Input): Promise<void> {
+  ownTwoStep(session);
+  const { user, actor } = session;
+  const [row] = await ctx.db.query(`SELECT ${MFA_COLUMNS} FROM admins WHERE id = ?`, user.id);
+  if (!row || row.mfa_secret === null) throw new HttpError(409, "Two-step verification is not on.");
+  const enabled = row.mfa_enabled_at !== null;
+  if (enabled) await confirmOwnPassword(ctx, session, input);
+  await ctx.db.batch([
+    record(actor, "mfa.disabled", { type: "admin", id: user.id, name: user.username }, enabled ? {} : { setup: "cancelled" }),
+    clearMfa(user.id),
+  ]);
+}
+
+/**
+ * The way back in for an administrator who lost their phone: whoever holds the
+ * root password turns their two-step verification off. Their password stays
+ * as it is, and so do their sessions.
+ */
+export async function resetTwoStep(ctx: Ctx, actor: Actor, id: string): Promise<void> {
+  if (actor.role !== "root") throw new HttpError(403, "Only whoever holds the root password turns off another account's two-step verification.");
+  const found = userFound("admin", id);
+  const results = await ctx.db.batch([
+    // Turning off what is not on changes nothing and writes nothing.
+    recordFound(actor, "mfa.disabled", "admin", { ...found, from: `${found.from} AND u.mfa_secret IS NOT NULL` }),
+    clearMfa(id),
+  ]);
+  if ((results.at(-1) ?? []).length === 0) throw new HttpError(404, "User not found.");
 }
 
 // ---------------------------------------------------------------------------

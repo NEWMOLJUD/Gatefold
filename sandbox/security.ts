@@ -162,3 +162,114 @@ export function sessionCookie(role: Role, token: string, maxAgeSeconds: number):
 export function clearCookie(role: Role): string {
   return `${cookieName(role)}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax`;
 }
+
+// ---------------------------------------------------------------------------
+// Two-step verification: the 6-digit codes of an authenticator app (TOTP, RFC 6238)
+// ---------------------------------------------------------------------------
+
+/** How long each code lasts. Every authenticator app assumes 30 seconds. */
+export const MFA_STEP_MS = 30_000;
+
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function toBase32(bytes: Uint8Array): string {
+  let text = "";
+  let value = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      text += BASE32[(value >>> bits) & 31];
+      value &= (1 << bits) - 1;
+    }
+  }
+  return bits > 0 ? text + BASE32[(value << (5 - bits)) & 31] : text;
+}
+
+function fromBase32(text: string): Uint8Array<ArrayBuffer> | null {
+  const bytes: number[] = [];
+  let value = 0;
+  let bits = 0;
+  for (const letter of text) {
+    const index = BASE32.indexOf(letter);
+    if (index < 0) return null;
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >>> bits) & 255);
+      value &= (1 << bits) - 1;
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+/** The key an administrator adds to their authenticator app: 160 random bits, as 32 letters and digits. */
+export function newMfaSecret(): string {
+  return toBase32(crypto.getRandomValues(new Uint8Array(20)));
+}
+
+/** The code the app shows during the 30-second `step` (the number of steps since 1970). */
+export async function mfaCode(secret: string, step: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", fromBase32(secret) ?? new Uint8Array(1), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const counter = new DataView(new ArrayBuffer(8));
+  counter.setUint32(0, Math.floor(step / 2 ** 32));
+  counter.setUint32(4, step >>> 0);
+  const digest = new Uint8Array(await crypto.subtle.sign("HMAC", key, counter));
+  const at = digest[19]! & 15;
+  const number = ((digest[at]! & 127) << 24) | (digest[at + 1]! << 16) | (digest[at + 2]! << 8) | digest[at + 3]!;
+  return String(number % 1_000_000).padStart(6, "0");
+}
+
+/**
+ * The step whose code was typed, or `null` when the code is wrong. The step
+ * before and the step after are accepted too: phones and servers do not agree
+ * on the time to the second, and a code takes a moment to type.
+ */
+export async function matchMfaCode(secret: string, code: string, now: number): Promise<number | null> {
+  const current = Math.floor(now / MFA_STEP_MS);
+  let matched: number | null = null;
+  // Every candidate is compared, so the time taken does not say which one matched.
+  for (const step of [current - 1, current, current + 1]) {
+    if ((await safeEqual(await mfaCode(secret, step), code)) && matched === null) matched = step;
+  }
+  return matched;
+}
+
+/** What an authenticator app reads to add the account: the key, and the names it shows beside the codes. */
+export function mfaUrl(issuer: string, username: string, secret: string): string {
+  const name = issuer.replace(/:/g, " ");
+  return `otpauth://totp/${encodeURIComponent(`${name}:${username}`)}?secret=${secret}&issuer=${encodeURIComponent(name)}`;
+}
+
+async function sealingKey(masterKey: string): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", await hmac(masterKey, "mfa-secret"), "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+/**
+ * The key of an authenticator app has to be read back to check a code, so it
+ * cannot be stored as a hash. It is stored encrypted with the master key:
+ * the database alone is not enough to make codes. `owner` ties it to one
+ * account, so a stored value copied to another account does not open.
+ */
+export async function sealMfaSecret(masterKey: string, secret: string, owner: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: encoder.encode(owner) }, await sealingKey(masterKey), encoder.encode(secret));
+  return `v1.${base64url(iv)}.${base64url(sealed)}`;
+}
+
+/** The key as it was sealed, or `null` if the stored value does not open (another master key, another account). */
+export async function openMfaSecret(masterKey: string, stored: string, owner: string): Promise<string | null> {
+  const [version, iv, sealed] = stored.split(".");
+  if (version !== "v1" || !iv || !sealed) return null;
+  try {
+    const opened = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: fromBase64url(iv), additionalData: encoder.encode(owner) }, await sealingKey(masterKey), fromBase64url(sealed),
+    );
+    return new TextDecoder().decode(opened);
+  } catch {
+    return null;
+  }
+}

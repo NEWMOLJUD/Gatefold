@@ -50,7 +50,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
       table.textContent = "";
       data.items.forEach(function (admin) {
         var row = document.createElement("tr");
-        cell(row, admin.username + (admin.suspended ? " (suspended)" : ""));
+        cell(row, admin.username + (admin.suspended ? " (suspended)" : "") + (admin.two_step ? " (two-step verification)" : ""));
         cell(row, new Date(admin.created_at).toISOString().slice(0, 16).replace("T", " "));
         var button = document.createElement("button");
         button.className = "btn btn-danger btn-sm";
@@ -85,6 +85,18 @@ export const ROOT_SCRIPT = String.raw`"use strict";
             .catch(failed);
         });
         actions.appendChild(reset);
+        if (admin.two_step) {
+          var twoStep = document.createElement("button");
+          twoStep.className = "btn btn-sm";
+          twoStep.textContent = "Turn off two-step";
+          twoStep.addEventListener("click", function () {
+            if (!confirm("Turn off two-step verification for " + admin.username + "? They will sign in with the password alone.")) return;
+            call("DELETE", "/api/root/admins/" + encodeURIComponent(admin.id) + "/two-step")
+              .then(function () { say("Two-step verification of " + admin.username + " turned off.", "ok"); return load(); })
+              .catch(failed);
+          });
+          actions.appendChild(twoStep);
+        }
         actions.appendChild(button);
         table.appendChild(row);
       });
