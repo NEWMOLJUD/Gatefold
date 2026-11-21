@@ -130,7 +130,7 @@ export default function ({ test, assert }: Tests) {
 
     // The listing shows the identifier, never the key; once revoked, it stops working.
     const list = (await (await app.fetch("/api/admin/api-keys", { headers: { cookie: admin } })).json()) as { items: Record<string, unknown>[] };
-    assert.equal(Object.keys(list.items[0]!).sort(), ["created_at", "id"]);
+    assert.equal(Object.keys(list.items[0]!).sort(), ["created_at", "expires_at", "id", "last_used_at", "name"]);
     await app.fetch(`/api/admin/api-keys/${String(list.items[0]!.id)}`, { method: "DELETE", headers: { cookie: admin } });
     assert.equal((await app.fetch("/api/admin/sources", { headers: { authorization: `Bearer ${adminKey}` } })).status, 401);
   });
@@ -332,7 +332,7 @@ export default function ({ test, assert }: Tests) {
     const leo = await createReader(app, cookie);
     const pages = [
       "/admin/home", "/admin/config", "/admin/list-sources", "/admin/list-readers?q=le", "/admin/create-reader",
-      `/admin/edit-reader?reader-id=${leo.id}`, "/admin/list-admins", "/admin/create-admin", "/admin/api-keys",
+      `/admin/edit-reader?reader-id=${leo.id}`, "/admin/list-admins", "/admin/create-admin", "/admin/api-keys", "/admin/account",
       "/admin/audit", "/admin/audit?action=login&actor=an&created_from=2020-01-01",
     ];
     for (const path of pages) {
@@ -340,7 +340,7 @@ export default function ({ test, assert }: Tests) {
       assert.equal(response.status, 200, path);
       assert((await response.text()).includes('aria-label="Sign out"'), `${path} has no sign-out button`);
     }
-    for (const path of ["/reader/home", "/reader/config", "/reader/api-keys"]) {
+    for (const path of ["/reader/home", "/reader/config", "/reader/api-keys", "/reader/account"]) {
       assert.equal((await app.fetch(path, { headers: { cookie: leo.cookie } })).status, 200, path);
     }
     // The source page changes the visibility, and nothing else.

@@ -50,7 +50,7 @@ export const ROOT_SCRIPT = String.raw`"use strict";
       table.textContent = "";
       data.items.forEach(function (admin) {
         var row = document.createElement("tr");
-        cell(row, admin.username);
+        cell(row, admin.username + (admin.suspended ? " (suspended)" : ""));
         cell(row, new Date(admin.created_at).toISOString().slice(0, 16).replace("T", " "));
         var button = document.createElement("button");
         button.className = "btn btn-danger btn-sm";
@@ -61,8 +61,31 @@ export const ROOT_SCRIPT = String.raw`"use strict";
             .then(function () { say("Administrator removed.", "ok"); return load(); })
             .catch(failed);
         });
-        cell(row, "").className = "end";
-        row.lastChild.appendChild(button);
+        var actions = cell(row, "");
+        actions.className = "end";
+        if (admin.suspended) {
+          var back = document.createElement("button");
+          back.className = "btn btn-sm";
+          back.textContent = "Reactivate";
+          back.addEventListener("click", function () {
+            call("POST", "/api/root/admins/" + encodeURIComponent(admin.id) + "/reactivate")
+              .then(function () { say("Administrator reactivated.", "ok"); return load(); })
+              .catch(failed);
+          });
+          actions.appendChild(back);
+        }
+        var reset = document.createElement("button");
+        reset.className = "btn btn-sm";
+        reset.textContent = "Set password";
+        reset.addEventListener("click", function () {
+          var secret = prompt("New password for " + admin.username + " (it is shown as you type):");
+          if (!secret) return;
+          call("PUT", "/api/root/admins/" + encodeURIComponent(admin.id), { password: secret })
+            .then(function () { say("Password of " + admin.username + " changed. Their sessions were signed out.", "ok"); })
+            .catch(failed);
+        });
+        actions.appendChild(reset);
+        actions.appendChild(button);
         table.appendChild(row);
       });
       if (data.items.length === 0) cell(table.appendChild(document.createElement("tr")), "No administrators yet. Create the first one above.");

@@ -11,7 +11,7 @@ import type { Server } from "../deps/server.ts";
 import {
   type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
   apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
-  identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, exportAuditQueries, policy, setPolicy, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
+  identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, changeOwnPassword, exportAuditQueries, policy, setPolicy, setSuspended, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, requireRoot, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
@@ -32,6 +32,20 @@ async function body(request: Request): Promise<Record<string, unknown>> {
   let parsed: unknown;
   try {
     parsed = await request.json();
+  } catch {
+    throw new HttpError(400, "The request body must be JSON.");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "The request body must be a JSON object.");
+  return parsed as Record<string, unknown>;
+}
+
+/** For the routes whose body is optional: no body at all is an empty object. */
+async function optionalBody(request: Request): Promise<Record<string, unknown>> {
+  const text = await request.text();
+  if (text.trim() === "") return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
   } catch {
     throw new HttpError(400, "The request body must be JSON.");
   }
@@ -83,9 +97,17 @@ export function registerApi(server: Server, ctx: Ctx): void {
     });
 
     // The response carries `key`, the key itself. It is the only time it appears.
+    // Optional body: `name` (what the key is for) and `expires_in_days` (without it, the key works until revoked).
     route("POST", `/api/${role}/api-keys`, async (request) => {
       const session = await enter(request, role);
-      return Response.json(await createApiKey(ctx, session.actor, role, session.user.id), { status: 201, headers: NO_STORE });
+      return Response.json(await createApiKey(ctx, session.actor, role, session.user.id, await optionalBody(request)), { status: 201, headers: NO_STORE });
+    });
+
+    // One's own password: `current_password` and `new_password`. With the session cookie only, never with a key.
+    // The other sessions of the account end.
+    route("PUT", `/api/${role}/password`, async (request) => {
+      await changeOwnPassword(ctx, await enter(request, role), await body(request));
+      return { ok: true };
     });
 
     route("DELETE", `/api/${role}/api-keys/:id`, async (request, _url, params) => {
@@ -157,8 +179,8 @@ export function registerApi(server: Server, ctx: Ctx): void {
       return oneAccount(session.rows);
     });
 
-    // Optional fields. Administrators: username, password. Readers: username, email,
-    // sources (the complete list of granted aliases); never a password.
+    // Optional fields. Administrators: username and, only on one's own account, password. Readers:
+    // username, email, sources (the complete list of granted aliases); never a password.
     route("PUT", `${base}/:id`, async (request, _url, params) => {
       const { actor } = await enter(request, "admin");
       await updateAccount(ctx, actor, role, params.id ?? "", await body(request));
@@ -170,6 +192,15 @@ export function registerApi(server: Server, ctx: Ctx): void {
       await deleteAccount(ctx, actor, role, params.id ?? "");
       return { ok: true };
     });
+
+    // A suspended account keeps what it has and can do nothing with it, until it is reactivated.
+    for (const [action, suspended] of [["suspend", true], ["reactivate", false]] as const) {
+      route("POST", `${base}/:id/${action}`, async (request, _url, params) => {
+        const { actor } = await enter(request, "admin");
+        await setSuspended(ctx, actor, role, params.id ?? "", suspended);
+        return { ok: true };
+      });
+    }
   }
 
   route("DELETE", "/api/admin/readers/:id/api-keys/:key", async (request, _url, params) => {
@@ -267,6 +298,19 @@ export function registerApi(server: Server, ctx: Ctx): void {
   route("PUT", "/api/root/settings", async (request) => {
     await requireRoot(ctx, request);
     return setPolicy(ctx, rootActor(ipOf(ctx, request)), await body(request));
+  });
+
+  // The way back in when no administrator can sign in: a new password (`{ "password": "..." }`), or a suspension lifted.
+  route("PUT", "/api/root/admins/:id", async (request, _url, params) => {
+    await requireRoot(ctx, request);
+    await updateAccount(ctx, rootActor(ipOf(ctx, request)), "admin", params.id ?? "", { password: (await body(request)).password });
+    return { ok: true };
+  });
+
+  route("POST", "/api/root/admins/:id/reactivate", async (request, _url, params) => {
+    await requireRoot(ctx, request);
+    await setSuspended(ctx, rootActor(ipOf(ctx, request)), "admin", params.id ?? "", false);
+    return { ok: true };
   });
 
   route("DELETE", "/api/root/admins/:id", async (request, _url, params) => {

@@ -2,7 +2,7 @@
 // same operation of `core.ts` that the API calls.
 import type { Server } from "../deps/server.ts";
 import {
-  ACCOUNT_ROWS, type Ctx, EXPORT_ROWS, HttpError, type Invite, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, PASSWORD_HINT, PASSWORD_MIN, PLATFORM_PROPS, POLICY, Reply, policy, sourceAccessRows, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
+  ACCOUNT_ROWS, type Ctx, EXPORT_ROWS, HttpError, KEY_MAX_DAYS, changeOwnPassword, setSuspended, type Invite, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, PASSWORD_HINT, PASSWORD_MIN, PLATFORM_PROPS, POLICY, Reply, policy, sourceAccessRows, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
   accountsPage, apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
   identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, redirect, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
@@ -146,10 +146,38 @@ ${field("password", "Password", html`<input type="password" id="password" name="
         return done(`/${role}/api-keys`, "Key revoked.");
       }
       // No redirect: the key appears in this response and nowhere else.
-      const created = await createApiKey(ctx, session.actor, role, session.user.id);
+      const created = await createApiKey(ctx, session.actor, role, session.user.id, { name: text(form, "name"), expires_in_days: text(form, "expires_in_days") });
       return keysPage(session, url, created.key);
     });
+
+    // One's own password ------------------------------------------------------
+
+    route("GET", `/${role}/account`, async (request, url) => {
+      const session = await enter(request, role);
+      const body = html`<form method="post">${card(html`
+${field("current", "Current password", html`<input type="password" id="current" name="current_password" autocomplete="current-password" required>`)}
+${field("new", "New password", html`<input type="password" id="new" name="new_password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`, PASSWORD_HINT)}
+${field("confirm", "Repeat the new password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`)}`,
+        { title: "Change your password", description: "You stay signed in here. Every other place where you are signed in is signed out.", class: "narrow",
+          footer: html`<button class="btn btn-primary">Change password</button>` })}</form>`;
+      return show({
+        title: "Your account", subtitle: `Signed in as ${session.user.username}.`, body, role, username: session.user.username, active: `/${role}/account`, url,
+      });
+    });
+
+    route("POST", `/${role}/account`, async (request) => {
+      const session = await enter(request, role);
+      const form = await request.formData();
+      if (text(form, "new_password") !== text(form, "confirm")) throw new HttpError(400, "The two new passwords are not the same.");
+      await changeOwnPassword(ctx, session, { current_password: text(form, "current_password"), new_password: text(form, "new_password") });
+      return done(`/${role}/account`, "Password changed. Your other sessions were signed out.");
+    });
   }
+
+  /** When a key ends and when it was last seen, as the tables show them. */
+  const keyTimes = (key: { expires_at: number | null; last_used_at: number | null }): Safe =>
+    html`<td>${key.expires_at === null ? html`<span class="muted">Never</span>` : key.expires_at <= Date.now() ? badge("Expired", "danger") : date(key.expires_at)}</td>
+<td>${key.last_used_at === null ? html`<span class="muted">Never</span>` : date(key.last_used_at)}</td>`;
 
   const keysPage = (session: Session, url: URL, created: string | null): Promise<Response> => {
     const role = session.role;
@@ -161,16 +189,21 @@ ${field("password", "Password", html`<input type="password" id="password" name="
         { title: "Copy your new key now", footer: html`<a class="btn btn-primary" href="/${role}/api-keys">I have copied it</a>` })
       : card(keys.length === 0
         ? empty("key", "No API keys yet", html`A key works as your sign-in on the <code>/api/${role}/…</code> routes, for scripts and integrations.`)
-        : html`<div class="table-wrap"><table><thead><tr><th>Key ID</th><th>Created (UTC)</th><th></th></tr></thead><tbody>
-${keys.map((key) => html`<tr><td><code>${key.id}</code></td><td>${date(key.created_at)}</td>
+        : html`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Key ID</th><th>Created (UTC)</th><th>Expires (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead><tbody>
+${keys.map((key) => html`<tr><td>${key.name ?? html`<span class="muted">No name</span>`}</td><td><code>${key.id}</code></td><td>${date(key.created_at)}</td>${keyTimes(key)}
 <td class="end"><form method="post" data-confirm="Revoke this key? Anything that uses it stops working at once.">
 <input type="hidden" name="action" value="revoke"><input type="hidden" name="key" value="${key.id}"><button class="btn btn-danger btn-sm">Revoke</button></form></td></tr>`)}
 </tbody></table></div>`, { flush: true });
     return show({
       title: "API keys",
       subtitle: html`Keys for the <code>/api/${role}/…</code> routes, sent as <code>Authorization: Bearer &lt;key&gt;</code>. The key ID is not the key.`,
-      actions: created ? undefined : html`<form method="post"><input type="hidden" name="action" value="create"><button class="btn btn-primary">${icon("plus")}Generate key</button></form>`,
-      body, role, username: session.user.username, active: `/${role}/api-keys`, url,
+      body: created ? body : html`${body}<br>
+<form method="post"><input type="hidden" name="action" value="create">${card(html`
+${field("name", "Name", html`<input type="text" id="name" name="name" maxlength="60" placeholder="backup script">`, "What the key is for, so you can tell it from the others later.")}
+${field("expires", "Works for", html`<select id="expires" name="expires_in_days"><option value="30">30 days</option><option value="90" selected>90 days</option>
+<option value="365">1 year</option><option value="">Until it is revoked</option></select>`, `A key that ends by itself is one less thing to remember to revoke. Through the API, any number of days up to ${KEY_MAX_DAYS}.`)}`,
+        { title: "Generate a key", class: "narrow", footer: html`<button class="btn btn-primary">${icon("plus")}Generate key</button>` })}</form>`,
+      role, username: session.user.username, active: `/${role}/api-keys`, url,
     });
   };
 
@@ -355,7 +388,7 @@ ${list.items.length === 0
       : empty("users", "No administrators yet", "Administrators manage sources, readers and each other.")
   : html`<div class="table-wrap"><table><thead><tr><th>Username</th>${role === "reader" ? html`<th>Email</th><th class="num">Private sources</th>` : ""}<th>Created (UTC)</th><th></th></tr></thead><tbody>
 ${list.items.map((account) => html`<tr><td><strong><a href="${editPath(account.id)}">${account.username}</a></strong>
-${role === "admin" && account.id === session.user.id ? html` ${badge("You")}` : ""}${account.pending ? html` ${badge("Awaiting password", "warn")}` : ""}</td>
+${role === "admin" && account.id === session.user.id ? html` ${badge("You")}` : ""}${account.pending ? html` ${badge("Awaiting password", "warn")}` : ""}${account.suspended ? html` ${badge("Suspended", "danger")}` : ""}</td>
 ${role === "reader" ? html`<td>${account.email ?? html`<span class="muted">None</span>`}</td><td class="num">${account.sources}</td>` : ""}<td>${date(account.created_at)}</td>
 <td class="end"><a class="btn btn-sm" href="${editPath(account.id)}">Manage</a></td></tr>`)}</tbody></table></div>`}
 ${pager(url, list.page, list.hasNext)}`, { flush: true });
@@ -408,8 +441,8 @@ ${role === "reader"
           { title: "Sources this reader can open", description: "Changes apply as soon as you save.", class: "narrow" })
         : "";
       const keys = role === "reader" && account.api_keys.length > 0
-        ? card(html`<div class="table-wrap"><table><thead><tr><th>Key ID</th><th>Created (UTC)</th><th></th></tr></thead><tbody>
-${account.api_keys.map((key) => html`<tr><td><code>${key.id}</code></td><td>${date(key.created_at)}</td>
+        ? card(html`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Key ID</th><th>Created (UTC)</th><th>Expires (UTC)</th><th>Last used (UTC)</th><th></th></tr></thead><tbody>
+${account.api_keys.map((key) => html`<tr><td>${key.name ?? html`<span class="muted">No name</span>`}</td><td><code>${key.id}</code></td><td>${date(key.created_at)}</td>${keyTimes(key)}
 <td class="end"><form method="post" data-confirm="Revoke this key of ${account.username}?"><input type="hidden" name="action" value="revoke-key">
 <input type="hidden" name="key" value="${key.id}"><button class="btn btn-danger btn-sm">Revoke</button></form></td></tr>`)}</tbody></table></div>`,
           { title: "API keys of this reader", class: "narrow", flush: true })
@@ -432,16 +465,22 @@ ${account.invite ? html`<form method="post" data-confirm="Revoke the link? It st
 ${card(html`${field("username", "Username", html`<input type="text" id="username" name="username" value="${account.username}" autocomplete="off" required>`)}
 ${role === "reader"
   ? field("email", "Email", html`<input type="email" id="email" name="email" value="${account.email ?? ""}" autocomplete="off" maxlength="254">`)
-  : field("password", "New password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}">`,
-      "Leave blank to keep the current one. Changing it signs this user out everywhere.")}`, { title: "Account", class: "narrow" })}
+  : html`<p class="hint">${self
+      ? html`To change your password, go to <a href="/admin/account">Your account</a>.`
+      : "Each administrator changes their own password, under Your account. If it is lost, whoever holds the root password sets a new one at /root/setup."}</p>`}`, { title: "Account", class: "narrow" })}
 ${sources}<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
 <br>${access}${keys}
+${card(html`<div class="split"><div>${account.suspended
+        ? html`<strong>This ${noun} is suspended</strong> ${badge("Suspended", "danger")}<p class="muted">They cannot sign in or use their API keys${role === "reader" ? " or an access link" : ""}. Everything they have is kept.</p>`
+        : html`<strong>Suspend this ${noun}</strong><p class="muted">Signs them out and keeps them out, without removing anything: reactivating gives it all back.${self ? " This is your own account: you will be signed out." : ""}</p>`}</div>
+<form method="post" ${account.suspended ? "" : new Safe(`data-confirm="Suspend this ${noun}? They are signed out at once."`)}>
+<input type="hidden" name="action" value="${account.suspended ? "reactivate" : "suspend"}"><button class="btn">${account.suspended ? "Reactivate" : "Suspend"}</button></form></div>`, { class: "narrow" })}
 ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
 <p class="muted">Deletes the account, its sessions and its API keys${role === "reader" ? ", and its permissions" : ""}.${self ? " This is your own account: you will be signed out." : ""}</p></div>
 <form method="post" data-confirm="Remove ${account.username}? This cannot be undone.">
 <input type="hidden" name="action" value="delete"><button class="btn btn-danger">Remove ${noun}</button></form></div>`, { class: "narrow danger-zone" })}`;
       return adminPage(session, url, {
-        title: account.username, subtitle: `${role === "reader" ? "Reader" : "Administrator"} since ${date(account.created_at)} UTC`,
+        title: account.username, subtitle: html`${role === "reader" ? "Reader" : "Administrator"} since ${date(account.created_at)} UTC${account.suspended ? html` &nbsp;${badge("Suspended", "danger")}` : ""}`,
         crumbs: [crumb], body, active: listPath,
       });
     });
@@ -455,6 +494,11 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
         await deleteAccount(ctx, session.actor, role, id);
         // Whoever removes their own account loses the session with it: back to sign-in.
         return role === "admin" && id === session.user.id ? redirect("/admin/") : done(listPath, "Account removed.");
+      }
+      if (action === "suspend" || action === "reactivate") {
+        await setSuspended(ctx, session.actor, role, id, action === "suspend");
+        if (action === "suspend" && role === "admin" && id === session.user.id) return redirect("/admin/");
+        return done(editPath(id), action === "suspend" ? "Account suspended." : "Account reactivated.");
       }
       if (action === "revoke-key" && role === "reader") {
         await deleteApiKey(ctx, session.actor, "reader", id, text(form, "key"));
@@ -470,9 +514,7 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
       }
       await updateAccount(ctx, session.actor, role, id, {
         username: text(form, "username"),
-        ...(role === "reader"
-          ? { email: text(form, "email"), sources: form.getAll("sources").filter((item) => typeof item === "string") }
-          : { password: text(form, "password") }),
+        ...(role === "reader" ? { email: text(form, "email"), sources: form.getAll("sources").filter((item) => typeof item === "string") } : {}),
       });
       return done(editPath(id), "Changes saved.");
     });

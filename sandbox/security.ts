@@ -81,6 +81,14 @@ export async function hashApiKey(masterKey: string, key: string): Promise<string
   return base64url(await hmac(masterKey, `api-key:${key}`));
 }
 
+/**
+ * What a count of attempts is kept under (see throttle.ts). A name that was
+ * typed may be a password typed into the wrong field: it is never stored as it is.
+ */
+export async function hashAttempt(masterKey: string, subject: string): Promise<string> {
+  return base64url(await hmac(masterKey, `attempt:${subject}`)).slice(0, 22);
+}
+
 /** The token of a reader's access link (`/reader/invite/<token>`). As long and random as an API key. */
 export function newInviteToken(): string {
   return randomId(32);

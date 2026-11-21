@@ -6,10 +6,11 @@ import type { Sites } from "../deps/sites.ts";
 import { type Actor, type AuditEntry, type Found, SYSTEM, hourOf, record, recordAs, recordFound, recordOnce, rootActor, toAuditEntry, visitor } from "./audit.ts";
 import { type Config, clientIp, publicOrigin, sameOrigin } from "./config.ts";
 import {
-  type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashInvite, hashPassword,
+  type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashAttempt, hashInvite, hashPassword,
   newApiKey, newInviteToken, randomId, readCookie, safeEqual, sessionCookie, signToken, verifyPassword, verifyToken,
 } from "./security.ts";
 import { DEFAULT_RENDER, MAX_PROPS, SOURCES_FOLDER, loadSourceConfig } from "./source-config.ts";
+import { type Limit, cleanupAttempts, countAttempts, forgetAttempts, overLimit, readAttempts, uncountAttempts } from "./throttle.ts";
 
 /**
  * Schema history. Once published, no statement is edited or removed: every
@@ -125,6 +126,24 @@ export const MIGRATIONS = [
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 )`,
+  // A suspended account keeps everything it has and can do nothing with it.
+  `ALTER TABLE admins ADD COLUMN suspended_at INTEGER`,
+  `ALTER TABLE readers ADD COLUMN suspended_at INTEGER`,
+  `ALTER TABLE api_keys ADD COLUMN name TEXT`,
+  `ALTER TABLE api_keys ADD COLUMN expires_at INTEGER`,
+  `ALTER TABLE api_keys ADD COLUMN last_used_at INTEGER`,
+  // How many times something was tried, per key, since `started_at`: see throttle.ts.
+  `CREATE TABLE login_attempts (
+  key TEXT PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL
+)`,
+  `CREATE INDEX login_attempts_started_at ON login_attempts (started_at)`,
+  // Never holds a row. Inserting a 0 fails, and takes the whole operation with
+  // it: that is how a change is called off from inside the operation (see `guard`).
+  `CREATE TABLE guards (
+  ok INTEGER NOT NULL CONSTRAINT guard_refused CHECK (ok = 1)
+)`,
 ];
 
 /** How long a login session lasts. */
@@ -134,8 +153,13 @@ export const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
  * purpose: until it is used, the link is a password in an address.
  */
 export const INVITE_MS = 72 * 60 * 60 * 1000;
-/** Wrong root password attempts accepted per hour, counting all visitors together. */
+/** Wrong root password attempts accepted per hour from one address, and from all addresses together. */
 export const ROOT_ATTEMPTS_PER_HOUR = 5;
+const ROOT_ATTEMPTS_PER_HOUR_ALL = 100;
+/** The root password is a secret someone generated, not one someone remembers: a short one is refused outright. */
+export const ROOT_PASSWORD_MIN = 32;
+/** Wrong sign-in attempts in fifteen minutes: for one account from one address, from one address, and for one account from anywhere. */
+export const LOGIN_ATTEMPTS = { pair: 5, address: 50, account: 20 };
 /** Items per page in listings. */
 export const PAGE_SIZE = 50;
 
@@ -316,6 +340,19 @@ function parseList(text: SqlValue | undefined, fallback: string[]): string[] {
 }
 
 /** A name or an email that is already taken becomes a message; any other failure is not hidden behind one. */
+/**
+ * A statement that calls the whole operation off when `condition` holds. It
+ * goes in the same batch as the change it protects, so the check and the
+ * change cannot come apart. `guardRefused` tells that failure from any other.
+ */
+function guard(condition: string, ...params: SqlParam[]): Statement {
+  return [`INSERT INTO guards (ok) SELECT 0 WHERE ${condition}`, ...params];
+}
+
+function guardRefused(error: unknown): boolean {
+  return error instanceof Error && /guard_refused/.test(error.message);
+}
+
 function conflict(error: unknown): never {
   const message = error instanceof Error ? error.message : "";
   if (/UNIQUE constraint failed/i.test(message)) {
@@ -341,6 +378,8 @@ export interface Session {
   user: User;
   /** Authenticated by API key rather than by cookie. */
   viaKey: boolean;
+  /** The session in the database, when there is one (a key has none). */
+  sid: string | null;
   /** The same person, as the audit log writes them down. */
   actor: Actor;
   /** Rows of the reads requested together with the session check. */
@@ -394,24 +433,31 @@ export async function identify(
   const { table, column, extra } = TABLE[role];
   let principal: Statement;
   let ref: UserRef;
+  const closing: Statement[] = [];
+  // A suspended account and an expired key are refused where the user is found, and so are the reads made in their name.
   if (found.kind === "session") {
-    principal = [
-      `SELECT u.id, u.username${extra} FROM sessions s JOIN ${table} u ON u.id = s.${column} WHERE s.id = ? AND s.${column} = ? AND s.expires_at > ?`,
-      found.claims.sid, found.claims.sub, now,
-    ];
-    ref = { sql: `(SELECT ${column} FROM sessions WHERE id = ? AND ${column} = ? AND expires_at > ?)`, params: [found.claims.sid, found.claims.sub, now], via: "session" };
+    const valid = `FROM sessions s JOIN ${table} u ON u.id = s.${column} WHERE s.id = ? AND s.${column} = ? AND s.expires_at > ? AND u.suspended_at IS NULL`;
+    const params = [found.claims.sid, found.claims.sub, now];
+    principal = [`SELECT u.id, u.username${extra} ${valid}`, ...params];
+    ref = { sql: `(SELECT u.id ${valid})`, params, via: "session" };
   } else {
-    principal = [`SELECT u.id, u.username${extra} FROM api_keys k JOIN ${table} u ON u.id = k.${column} WHERE k.key_hash = ?`, found.hash];
-    ref = { sql: `(SELECT ${column} FROM api_keys WHERE key_hash = ?)`, params: [found.hash], via: "key" };
+    const valid = `FROM api_keys k JOIN ${table} u ON u.id = k.${column} WHERE k.key_hash = ? AND (k.expires_at IS NULL OR k.expires_at > ?) AND u.suspended_at IS NULL`;
+    const params = [found.hash, now];
+    principal = [`SELECT u.id, u.username${extra} ${valid}`, ...params];
+    ref = { sql: `(SELECT u.id ${valid})`, params, via: "key" };
+    // When the key was last used, to the hour: enough to tell a key in use from a forgotten one.
+    closing.push(["UPDATE api_keys SET last_used_at = ? WHERE key_hash = ? AND (last_used_at IS NULL OR last_used_at < ?)", now, found.hash, now - HOUR_MS]);
   }
-  const [who = [], ...rows] = await ctx.db.batch([principal, ...(options.reads?.(ref) ?? [])]);
+  const reads = options.reads?.(ref) ?? [];
+  const [who = [], ...results] = await ctx.db.batch([principal, ...reads, ...closing]);
+  const rows = results.slice(0, reads.length);
   const row = who[0];
   if (!row) return { session: null, rows };
   const user: User = { id: String(row.id), username: String(row.username), props: parseObject(row.props) };
   const viaKey = found.kind === "key";
   const actor: Actor = { role, id: user.id, name: user.username, via: viaKey ? "key" : "session", ip: ipOf(ctx, request) };
   if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD") await requireSameOrigin(ctx, request, actor);
-  return { session: { role, user, viaKey, actor, rows }, rows };
+  return { session: { role, user, viaKey, sid: found.kind === "session" ? found.claims.sid : null, actor, rows }, rows };
 }
 
 /** The name the audit log gives to a sign-in attempt for an account that does not exist. */
@@ -423,29 +469,56 @@ export interface LoginResult {
 }
 
 /**
- * Two database round trips: fetch the user and, once the password checks out,
- * store the session. A refused sign-in is written to the audit log too: with
- * the account's name when there is one, and never with the password.
+ * Two database round trips. The first counts the attempt and fetches the
+ * user; the second, once the password checks out, stores the session and takes
+ * the attempt back. Too many attempts are refused before the password is even
+ * looked at. A refused sign-in is written to the audit log: with the account's
+ * name when there is one, and never with the password.
  */
 export async function login(ctx: Ctx, request: Request, role: Role, input: Input): Promise<LoginResult> {
   await requireSameOrigin(ctx, request);
-  const name = typeof input.username === "string" ? input.username : "";
+  const name = typeof input.username === "string" ? input.username.slice(0, 256) : "";
   const secret = typeof input.password === "string" ? input.password.slice(0, 256) : "";
-  const [row] = await ctx.db.query(`SELECT id, username, password_hash FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name);
-  const valid = await verifyPassword(ctx.secrets.get(SECRET_MASTER), secret, row ? String(row.password_hash) : null);
+  const master = ctx.secrets.get(SECRET_MASTER);
+  const ip = ipOf(ctx, request);
+  const now = Date.now();
+  const account = await hashAttempt(master, `${role}:${name.toLowerCase()}`);
+  // With no address to go by, everyone who tries this account is counted together.
+  const pair = `login:${account}:${ip ?? "unknown"}`;
+  const limits: Limit[] = [
+    { key: pair, max: LOGIN_ATTEMPTS.pair },
+    ...(ip ? [{ key: `login-from:${ip}`, max: LOGIN_ATTEMPTS.address }] : []),
+    { key: `login:${account}`, max: LOGIN_ATTEMPTS.account },
+  ];
+  const [counted = [], users = []] = await ctx.db.batch([
+    countAttempts(limits, now),
+    [`SELECT id, username, password_hash, suspended_at FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name],
+  ]);
+  const row = users[0];
   // What was typed is only written down when it is the name of an account: people type passwords into the wrong field.
-  const actor: Actor = { role, id: row ? String(row.id) : null, name: row ? String(row.username) : UNKNOWN_NAME, via: "password", ip: ipOf(ctx, request) };
+  const actor: Actor = { role, id: row ? String(row.id) : null, name: row ? String(row.username) : UNKNOWN_NAME, via: "password", ip };
+  if (overLimit(counted, limits, true)) {
+    await ctx.db.batch([recordOnce(actor, "login.blocked", `blocked:${pair}:${hourOf(now)}`)]);
+    throw new HttpError(429, "Too many sign-in attempts. Wait fifteen minutes and try again.");
+  }
+  const valid = await verifyPassword(master, secret, row ? String(row.password_hash) : null);
   if (!row || !valid) {
     await ctx.db.batch([record(actor, "login.failed", null)]);
     throw new HttpError(401, "Invalid username or password.");
   }
-  const now = Date.now();
+  // Said only to whoever has the password: nobody else learns that the account exists, or that it is suspended.
+  if (row.suspended_at !== null) {
+    await ctx.db.batch([record(actor, "login.failed", null, { reason: "suspended" }), uncountAttempts(limits)]);
+    throw new HttpError(403, "This account is suspended. Ask an administrator.");
+  }
   const sid = randomId();
   const id = String(row.id);
   const token = await signToken(ctx.secrets.get(SECRET_SIGNING), { sid, sub: id, role, exp: Math.floor((now + SESSION_MS) / 1000) });
   await ctx.db.batch([
     [`INSERT INTO sessions (id, ${TABLE[role].column}, created_at, expires_at) VALUES (?, ?, ?, ?)`, sid, id, now, now + SESSION_MS],
     record(actor, "login", null),
+    uncountAttempts(limits),
+    forgetAttempts(pair),
   ]);
   return { cookie: sessionCookie(role, token, SESSION_MS / 1000), user: { id, username: String(row.username) } };
 }
@@ -468,29 +541,39 @@ export async function logout(ctx: Ctx, request: Request, role: Role): Promise<st
   return clearCookie(role);
 }
 
-/** Root password, with a global limit of wrong attempts per hour. */
+/**
+ * Root password. Wrong attempts are counted per hour for each address, so
+ * that a stranger who guesses locks only themselves out; a much higher count
+ * of all addresses together stops a guess spread over many. Where the app
+ * cannot tell addresses apart (see `client_ip` in config.ts), everyone is one
+ * address, and five wrong attempts lock root for everyone for the hour.
+ */
 export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
-  if (request.method !== "GET") await requireSameOrigin(ctx, request, rootActor(ipOf(ctx, request)));
-  const hour = Math.floor(Date.now() / HOUR_MS);
-  const [row] = await ctx.db.query("SELECT attempts FROM root_attempts WHERE hour = ?", hour);
-  if (Number(row?.attempts ?? 0) >= ROOT_ATTEMPTS_PER_HOUR) {
-    throw new HttpError(429, "Too many wrong root password attempts. Try again in the next hour.");
+  const ip = ipOf(ctx, request);
+  const actor = rootActor(ip);
+  if (request.method !== "GET") await requireSameOrigin(ctx, request, actor);
+  const secret = ctx.secrets.get(SECRET_ROOT);
+  if (secret.length < ROOT_PASSWORD_MIN) {
+    throw new HttpError(503, `Root access is off: the ${SECRET_ROOT} secret must have at least ${ROOT_PASSWORD_MIN} characters. Set a longer one where the app runs.`);
+  }
+  const now = Date.now();
+  const limits: Limit[] = [{ key: `root:${ip ?? "unknown"}`, max: ROOT_ATTEMPTS_PER_HOUR }, { key: "root:*", max: ROOT_ATTEMPTS_PER_HOUR_ALL }];
+  if (overLimit(await ctx.db.query(...readAttempts(limits, now, HOUR_MS)), limits, false)) {
+    await ctx.db.batch([recordOnce(actor, "root.blocked", `root-blocked:${ip ?? "unknown"}:${hourOf(now)}`)]);
+    throw new HttpError(429, "Too many wrong root password attempts. Try again in an hour.");
   }
   const given = request.headers.get("x-root-password") ?? "";
-  if (given !== "" && (await safeEqual(given, ctx.secrets.get(SECRET_ROOT)))) return;
-  await ctx.db.batch([
-    ["INSERT INTO root_attempts (hour, attempts) VALUES (?, 1) ON CONFLICT (hour) DO UPDATE SET attempts = attempts + 1", hour],
-    record(rootActor(ipOf(ctx, request)), "root.denied", null),
-  ]);
+  if (given !== "" && (await safeEqual(given, secret))) return;
+  await ctx.db.batch([countAttempts(limits, now, HOUR_MS), record(actor, "root.denied", null)]);
   throw new HttpError(401, "Wrong root password.");
 }
 
-/** Scheduled job, every hour: expired sessions, expired access links and old root password attempt counts. */
+/** Scheduled job, every hour: expired sessions, expired access links and old counts of attempts. */
 export async function cleanup(ctx: Ctx, time: Date): Promise<void> {
   await ctx.db.batch([
     ["DELETE FROM sessions WHERE expires_at < ?", time.getTime()],
     ["DELETE FROM invites WHERE expires_at < ?", time.getTime()],
-    ["DELETE FROM root_attempts WHERE hour < ?", Math.floor(time.getTime() / HOUR_MS) - 24],
+    cleanupAttempts(time.getTime()),
     setSetting("cron_last_run", String(time.getTime()), time.getTime()),
   ]);
 }
@@ -740,6 +823,8 @@ export interface Account {
   pending?: boolean;
   /** Readers: private sources granted. */
   sources?: number;
+  /** A suspended account keeps everything it has and cannot sign in or use its keys. */
+  suspended: boolean;
 }
 
 function toAccount(row: Row): Account {
@@ -747,6 +832,7 @@ function toAccount(row: Row): Account {
     id: String(row.id),
     username: String(row.username),
     created_at: Number(row.created_at),
+    suspended: row.suspended_at !== null && row.suspended_at !== undefined,
     ...(row.pending === undefined ? {} : { email: typeof row.email === "string" ? row.email : null, pending: row.pending === 1 }),
     ...(row.sources === undefined ? {} : { sources: Number(row.sources) }),
   };
@@ -771,7 +857,7 @@ export function listAccountsQuery(role: Role, filters: URLSearchParams): Stateme
   const extra = role === "reader" ? `${READER_COLUMNS}, (SELECT COUNT(*) FROM permissions p WHERE p.reader_id = u.id) AS sources` : "";
   const order = role === "reader" ? "u.created_at DESC, u.id" : "u.username";
   return [
-    `SELECT u.id, u.username, u.created_at${extra} FROM ${TABLE[role].table} u${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ` +
+    `SELECT u.id, u.username, u.created_at, u.suspended_at${extra} FROM ${TABLE[role].table} u${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ` +
       `ORDER BY ${order} LIMIT ? OFFSET ?`,
     ...params, PAGE_SIZE + 1, (pageNumber(filters) - 1) * PAGE_SIZE,
   ];
@@ -788,7 +874,7 @@ export function accountsPage(rows: Row[], filters: URLSearchParams): Page<Accoun
  */
 export async function createAccount(ctx: Ctx, actor: Actor, role: Role, input: Input): Promise<Account & { invite?: Invite }> {
   const name = username(input.username);
-  const account: Account = { id: randomId(), username: name, created_at: Date.now() };
+  const account: Account = { id: randomId(), username: name, created_at: Date.now(), suspended: false };
   const statements: Statement[] = [];
   let invite: IssuedInvite | undefined;
   if (role === "reader") {
@@ -824,8 +910,8 @@ export const ACCOUNT_ROWS = { account: 0, keys: 1, allowed: 2, sources: 3, invit
 export function accountQueries(role: Role, id: string): Statement[] {
   const { table, column } = TABLE[role];
   const queries: Statement[] = [
-    [`SELECT u.id, u.username, u.created_at${role === "reader" ? READER_COLUMNS : ""} FROM ${table} u WHERE u.id = ?`, id],
-    [`SELECT id, created_at FROM api_keys WHERE ${column} = ? ORDER BY created_at DESC`, id],
+    [`SELECT u.id, u.username, u.created_at, u.suspended_at${role === "reader" ? READER_COLUMNS : ""} FROM ${table} u WHERE u.id = ?`, id],
+    [`SELECT ${KEY_COLUMNS} FROM api_keys WHERE ${column} = ? ORDER BY created_at DESC`, id],
   ];
   if (role === "reader") {
     queries.push(
@@ -877,6 +963,10 @@ export async function updateAccount(ctx: Ctx, actor: Actor, role: Role, id: stri
     throw new HttpError(400, "A reader's password is not set here: generate an access link, and the reader chooses the password through it.");
   }
   const newPassword = input.password !== undefined && input.password !== "" ? input.password : null;
+  // An administrator who could set another's password could sign in as them, and the log would name the wrong person.
+  if (newPassword !== null && actor.role !== "root" && actor.id !== id) {
+    throw new HttpError(403, "Only the administrator themselves, or whoever holds the root password, sets this password.");
+  }
   if (role === "reader" && input.email !== undefined && input.email !== "") wanted.email = email(input.email);
   if (role === "reader" && input.sources !== undefined) {
     const aliases = Array.isArray(input.sources) ? input.sources : [input.sources];
@@ -940,6 +1030,19 @@ export async function updateAccount(ctx: Ctx, actor: Actor, role: Role, id: stri
   }
 }
 
+const LAST_ADMIN = "This is the last active administrator. Add or reactivate another one first; whoever holds the root password can still do this at /root/setup.";
+
+/**
+ * Calls the operation off when `id` is the only administrator who can still
+ * sign in. Root is not held by it: root can always make an administrator again.
+ */
+function keepOneAdmin(actor: Actor, role: Role, id: string): Statement[] {
+  if (role !== "admin" || actor.role === "root") return [];
+  return [guard(
+    "EXISTS (SELECT 1 FROM admins WHERE id = ? AND suspended_at IS NULL) AND NOT EXISTS (SELECT 1 FROM admins WHERE id <> ? AND suspended_at IS NULL)", id, id,
+  )];
+}
+
 /**
  * Sessions, keys, access links and permissions are removed explicitly in the
  * same operation: the system does not rely on cascading deletes being enabled
@@ -948,14 +1051,90 @@ export async function updateAccount(ctx: Ctx, actor: Actor, role: Role, id: stri
 export async function deleteAccount(ctx: Ctx, actor: Actor, role: Role, id: string): Promise<void> {
   const { table, column } = TABLE[role];
   const statements: Statement[] = [
+    ...keepOneAdmin(actor, role, id),
     recordFound(actor, `${role}.removed`, role, userFound(role, id)),
     [`DELETE FROM sessions WHERE ${column} = ?`, id],
     [`DELETE FROM api_keys WHERE ${column} = ?`, id],
   ];
   if (role === "reader") statements.push(["DELETE FROM permissions WHERE reader_id = ?", id], ["DELETE FROM invites WHERE reader_id = ?", id]);
   statements.push([`DELETE FROM ${table} WHERE id = ? RETURNING id`, id]);
-  const results = await ctx.db.batch(statements);
+  let results: Row[][];
+  try {
+    results = await ctx.db.batch(statements);
+  } catch (error) {
+    if (guardRefused(error)) throw new HttpError(409, LAST_ADMIN);
+    throw error;
+  }
   if ((results.at(-1) ?? []).length === 0) throw new HttpError(404, "User not found.");
+}
+
+/**
+ * Suspends an account, or lets it back in. A suspended account keeps its
+ * permissions, its props and its keys, and can do nothing with them: its
+ * sessions end at once, and it cannot sign in, use a key or use an access link.
+ */
+export async function setSuspended(ctx: Ctx, actor: Actor, role: Role, id: string, suspended: boolean): Promise<void> {
+  const { table, column } = TABLE[role];
+  const found = userFound(role, id);
+  let results: Row[][];
+  try {
+    results = await ctx.db.batch(suspended
+      ? [
+          [`SELECT id FROM ${table} WHERE id = ?`, id],
+          ...keepOneAdmin(actor, role, id),
+          // Suspending what is already suspended changes nothing and writes nothing.
+          recordFound(actor, `${role}.suspended`, role, { ...found, from: `${found.from} AND u.suspended_at IS NULL` }),
+          [`UPDATE ${table} SET suspended_at = ? WHERE id = ? AND suspended_at IS NULL`, Date.now(), id],
+          [`DELETE FROM sessions WHERE ${column} = ?`, id],
+        ]
+      : [
+          [`SELECT id FROM ${table} WHERE id = ?`, id],
+          recordFound(actor, `${role}.reactivated`, role, { ...found, from: `${found.from} AND u.suspended_at IS NOT NULL` }),
+          [`UPDATE ${table} SET suspended_at = NULL WHERE id = ?`, id],
+        ]);
+  } catch (error) {
+    if (guardRefused(error)) throw new HttpError(409, LAST_ADMIN);
+    throw error;
+  }
+  if ((results[0] ?? []).length === 0) throw new HttpError(404, "User not found.");
+}
+
+/** Wrong current passwords accepted in fifteen minutes when changing a password. */
+const PASSWORD_CHANGE_ATTEMPTS = 5;
+
+/**
+ * Whoever is signed in changes their own password, by saying the current one.
+ * Their other sessions end; the one they are using stays. Not with an API key:
+ * a key that could change the password would be worth the whole account.
+ */
+export async function changeOwnPassword(ctx: Ctx, session: Session, input: Input): Promise<void> {
+  if (session.viaKey || session.sid === null) throw new HttpError(403, "The password is changed signed in with it, not with an API key.");
+  const { role, user, actor } = session;
+  const { table, column } = TABLE[role];
+  const master = ctx.secrets.get(SECRET_MASTER);
+  const current = typeof input.current_password === "string" ? input.current_password.slice(0, 256) : "";
+  const now = Date.now();
+  // Someone who took over a session must not be able to guess the password through this.
+  const limits: Limit[] = [{ key: `password:${role}:${user.id}`, max: PASSWORD_CHANGE_ATTEMPTS }];
+  const [counted = [], accounts = []] = await ctx.db.batch([
+    countAttempts(limits, now),
+    [`SELECT password_hash${role === "reader" ? ", email" : ""} FROM ${table} WHERE id = ?`, user.id],
+  ]);
+  const account = accounts[0];
+  if (!account) throw new HttpError(404, "User not found.");
+  if (overLimit(counted, limits, true)) throw new HttpError(429, "Too many attempts. Wait fifteen minutes and try again.");
+  if (!(await verifyPassword(master, current, String(account.password_hash)))) {
+    await ctx.db.batch([record(actor, "login.failed", null, { reason: "wrong current password" })]);
+    throw new HttpError(403, "The current password is not right.");
+  }
+  const chosen = password(input.new_password, [user.username, typeof account.email === "string" ? account.email : null]);
+  if (chosen === current) throw new HttpError(400, "The new password is the same as the current one.");
+  await ctx.db.batch([
+    record(actor, "password.changed", { type: role, id: user.id, name: user.username }),
+    [`UPDATE ${table} SET password_hash = ? WHERE id = ?`, await hashPassword(master, chosen), user.id],
+    [`DELETE FROM sessions WHERE ${column} = ? AND id <> ?`, user.id, session.sid],
+    forgetAttempts(limits[0]!.key),
+  ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1035,7 +1214,7 @@ export function inviteUrl(ctx: Ctx, request: Request, token: string): string {
 export async function findInvite(ctx: Ctx, request: Request, token: string): Promise<{ id: string; username: string; email: string | null; expires_at: number; hash: string }> {
   const hash = await hashInvite(ctx.secrets.get(SECRET_MASTER), token.slice(0, 128));
   const [row] = await ctx.db.query(
-    "SELECT u.id, u.username, u.email, i.expires_at FROM invites i JOIN readers u ON u.id = i.reader_id WHERE i.token_hash = ? AND i.expires_at > ?",
+    "SELECT u.id, u.username, u.email, i.expires_at FROM invites i JOIN readers u ON u.id = i.reader_id WHERE i.token_hash = ? AND i.expires_at > ? AND u.suspended_at IS NULL",
     hash, Date.now(),
   );
   if (!row) return invalidInvite(ctx, request);
@@ -1109,31 +1288,59 @@ export async function setReaderProps(ctx: Ctx, actor: Actor, readerId: string, v
 
 export interface ApiKey {
   id: string;
+  /** What the owner called it ("backup script"), to tell keys apart. */
+  name: string | null;
   created_at: number;
+  /** When it stops working; `null` for a key that never expires. */
+  expires_at: number | null;
+  /** When it was last used, to the hour; `null` for a key never used. */
+  last_used_at: number | null;
 }
 
+const KEY_COLUMNS = "id, name, created_at, expires_at, last_used_at";
+/** The longest life a key can be given, in days. */
+export const KEY_MAX_DAYS = 3650;
+
 function toApiKey(row: Row): ApiKey {
-  return { id: String(row.id), created_at: Number(row.created_at) };
+  const time = (value: SqlValue | undefined): number | null => (typeof value === "number" ? value : null);
+  return { id: String(row.id), name: typeof row.name === "string" ? row.name : null, created_at: Number(row.created_at), expires_at: time(row.expires_at), last_used_at: time(row.last_used_at) };
 }
 
 export function apiKeysQuery(role: Role, user: UserRef): Statement {
-  return [`SELECT id, created_at FROM api_keys WHERE ${TABLE[role].column} = ${user.sql} ORDER BY created_at DESC`, ...user.params];
+  return [`SELECT ${KEY_COLUMNS} FROM api_keys WHERE ${TABLE[role].column} = ${user.sql} ORDER BY created_at DESC`, ...user.params];
 }
 
 export function apiKeys(rows: Row[] | undefined): ApiKey[] {
   return (rows ?? []).map(toApiKey);
 }
 
-/** The key itself appears only here, once: the database stores only its hash. */
-export async function createApiKey(ctx: Ctx, actor: Actor, role: Role, ownerId: string): Promise<ApiKey & { key: string }> {
+/**
+ * The key itself appears only here, once: the database stores only its hash.
+ * `name` says what the key is for; `expires_in_days` gives it an end (without
+ * it, the key works until it is revoked).
+ */
+export async function createApiKey(ctx: Ctx, actor: Actor, role: Role, ownerId: string, input: Input = {}): Promise<ApiKey & { key: string }> {
+  let name: string | null = null;
+  if (input.name !== undefined && input.name !== null && input.name !== "") {
+    if (typeof input.name !== "string" || input.name.trim().length > 60) throw new HttpError(400, "The name of a key has up to 60 characters.");
+    name = input.name.trim() || null;
+  }
+  let days: number | null = null;
+  if (input.expires_in_days !== undefined && input.expires_in_days !== null && input.expires_in_days !== "") {
+    days = typeof input.expires_in_days === "string" && /^\d{1,5}$/.test(input.expires_in_days) ? Number(input.expires_in_days) : (input.expires_in_days as number);
+    if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > KEY_MAX_DAYS) {
+      throw new HttpError(400, `"expires_in_days" must be a whole number from 1 to ${KEY_MAX_DAYS}.`);
+    }
+  }
   const key = newApiKey(role);
-  const created = { id: randomId(), created_at: Date.now() };
+  const now = Date.now();
+  const created: ApiKey = { id: randomId(), name, created_at: now, expires_at: days === null ? null : now + days * DAY_MS, last_used_at: null };
   await ctx.db.batch([
     [
-      `INSERT INTO api_keys (id, key_hash, ${TABLE[role].column}, created_at) VALUES (?, ?, ?, ?)`,
-      created.id, await hashApiKey(ctx.secrets.get(SECRET_MASTER), key), ownerId, created.created_at,
+      `INSERT INTO api_keys (id, key_hash, ${TABLE[role].column}, name, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      created.id, await hashApiKey(ctx.secrets.get(SECRET_MASTER), key), ownerId, name, now, created.expires_at,
     ],
-    record(actor, "api_key.created", { type: "api_key", id: created.id, name: null }, { owner_role: role, owner_id: ownerId }),
+    record(actor, "api_key.created", { type: "api_key", id: created.id, name }, { owner_role: role, owner_id: ownerId, ...(created.expires_at === null ? {} : { expires_at: created.expires_at }) }),
   ]);
   return { ...created, key };
 }

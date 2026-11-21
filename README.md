@@ -205,7 +205,11 @@ HTML files go through a small template engine before delivery:
   - It also records a reader opening a private source (once an hour for each reader and source), a reader refused a source, access links that do not work and requests refused for coming from another site.
   - **Export CSV** downloads what the filters show (`GET /api/admin/audit.csv`, up to 5000 entries per file). Exporting is recorded too.
   - Entries are kept for 180 days and then removed by a daily job, which leaves an entry saying how many it removed. Only whoever holds the root password changes that period, at `/root/setup` (90 to 3650 days): an administrator cannot shorten their own trail.
-- **Root password:** 5 wrong attempts per hour, then it locks until the next hour.
+- **Root password:** it must have at least 32 characters, or root access is off. 5 wrong attempts in an hour lock it for an hour, for the address they came from. Where the app cannot tell addresses apart (see [Behind a reverse proxy](#behind-a-reverse-proxy)), that is everyone.
+- **Sign-in:** 5 wrong passwords for the same account from the same address block that pair for 15 minutes. A good password takes the wrong ones back.
+- **Your account:** everyone changes their own password, saying the current one. An administrator's lost password is set again by whoever holds the root password, at `/root/setup`; a reader's, by a new access link.
+- **Suspending** an account signs it out and keeps it out (sessions, API keys, access links) without removing anything. The last administrator who can sign in cannot be suspended or removed, except by root.
+- **API keys** have a name, can be given an end (30 days, 90 days, a year, or any number of days through the API) and show when they were last used.
 - **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
 
 ### Commands

@@ -55,6 +55,7 @@ const ICONS = {
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 7.5v.5",
   book: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11",
   history: "M12 7v5l3 2M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4",
+  user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 20a8 8 0 0 1 16 0",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -136,11 +137,13 @@ const NAV: Record<Role, [href: string, label: string, symbol: IconName][]> = {
     ["/admin/config", "Platform props", "sliders"],
     ["/admin/api-keys", "API keys", "key"],
     ["/admin/audit", "Audit log", "history"],
+    ["/admin/account", "Your account", "user"],
   ],
   reader: [
     ["/reader/home", "Library", "book"],
     ["/reader/config", "Preferences", "sliders"],
     ["/reader/api-keys", "API keys", "key"],
+    ["/reader/account", "Your account", "user"],
   ],
 };
 
