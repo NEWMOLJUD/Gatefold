@@ -1710,7 +1710,8 @@ export async function findInvite(
  * operation, every earlier session of the reader ends, and a new one starts:
  * they are signed in. Not so for a reader with two-step verification on: the
  * link is no substitute for the code, so `cookie` is `null` and they sign in
- * with the new password and a code.
+ * with the new password and a code. A reader of whom it is required, and who
+ * has not set it up, leaves with the setup already started (`twoStepOwed`).
  */
 export async function acceptInvite(ctx: Ctx, request: Request, token: string, input: Input): Promise<Omit<LoginResult, "cookie"> & { cookie: string | null }> {
   await requireSameOrigin(ctx, request);
@@ -1722,11 +1723,19 @@ export async function acceptInvite(ctx: Ctx, request: Request, token: string, in
   const actor: Actor = { role: "reader", id: reader.id, name: reader.username, via: "link", ip: ipOf(ctx, request) };
   // Every statement checks the link again: of two requests with the same link, only one finds it.
   const valid = "(SELECT reader_id FROM invites WHERE token_hash = ? AND expires_at > ?)";
+  // A reader who owes two-step verification starts setting it up here: they
+  // have just chosen the password, so asking for it again would prove nothing.
+  // The key waits, unused at sign-in, until a code from the app confirms it.
+  const setup: Statement[] = !reader.twoStepOwed ? [] : [
+    recordFound(actor, "mfa.setup", "reader", { from: `readers u WHERE u.id = ${valid} AND u.mfa_enabled_at IS NULL`, params: [tokenHash, now], id: "u.id", name: "u.username" }),
+    [`UPDATE readers SET mfa_secret = ? WHERE id = ${valid} AND mfa_enabled_at IS NULL`, await sealMfaSecret(ctx.secrets.get(SECRET_MASTER), newMfaSecret(), reader.id), tokenHash, now],
+  ];
   const [, changed = []] = await ctx.db.batch([
     recordFound(actor, "reader.password.set", "reader", { from: `readers u WHERE u.id = ${valid}`, params: [tokenHash, now], id: "u.id", name: "u.username" }),
     [`UPDATE readers SET password_hash = ? WHERE id = ${valid} RETURNING id`, hash, tokenHash, now],
     [`DELETE FROM sessions WHERE reader_id = ${valid}`, tokenHash, now],
     [`INSERT INTO sessions (id, reader_id, created_at, expires_at) SELECT ?, reader_id, ?, ? FROM invites WHERE token_hash = ? AND expires_at > ? AND EXISTS (SELECT 1 FROM readers u WHERE u.id = reader_id AND u.mfa_enabled_at IS NULL)`, sid, now, now + SESSION_MS, tokenHash, now],
+    ...setup,
     ["DELETE FROM invites WHERE token_hash = ?", tokenHash],
   ]);
   if (changed.length === 0) return invalidInvite(ctx, request);

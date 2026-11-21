@@ -142,12 +142,24 @@ export default function ({ test, assert }: Tests) {
     const cookie = cookieOf(chosen);
     assert.equal((await get(app, "/reader/home", { cookie })).headers.get("location"), "/reader/account");
 
-    // The whole setup, through the forms of Your account.
+    // The link page said so beforehand.
+    const mia = await pendingReader(app, ana, "mia");
+    const linkPage = await (await get(app, mia.link, {})).text();
+    assert(linkPage.includes("you will set up two-step verification") && linkPage.includes("Create password and continue"));
+
+    // The setup has started already: the password was chosen a moment ago, and is not asked again.
+    // Your account opens on the QR code to scan, with the key beside it for who cannot scan.
     const send = (fields: Record<string, string>) => app.fetch("/reader/account", {
       method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString(),
     });
-    assert.equal((await send({ action: "two-step-start", current_password: "leo-password" })).status, 303);
-    const secret = /id="two-step-key">([A-Z2-7]{32})</.exec(await (await get(app, "/reader/account", { cookie })).text())?.[1] ?? "";
+    const setupPage = await (await get(app, "/reader/account", { cookie })).text();
+    assert(/id="two-step-qr"><svg [^>]*role="img"/.test(setupPage), "the setup shows a QR code");
+    const secret = /id="two-step-key">([A-Z2-7]{32})</.exec(setupPage)?.[1] ?? "";
+    assert(secret !== "", "the setup started with the link");
+    assert.equal((await audit(app, ana, "action=mfa.setup")).map((row) => [row.actor.name, row.target?.name]), [["leo", "leo"]]);
+    // Until a code confirms it, nothing else opens and the password alone still signs in (to this same page).
+    assert.equal((await signIn(app, "leo", "leo-password")).status, 200);
+    assert.equal((await send({ action: "two-step-confirm", code: "000000" })).headers.get("location")?.includes("error="), true);
     assert.equal((await send({ action: "two-step-confirm", code: await codeNow(secret) })).status, 303);
     assert.equal((await get(app, "/reader/home", { cookie })).status, 200);
 

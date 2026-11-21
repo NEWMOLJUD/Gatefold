@@ -14,6 +14,7 @@ import { labelFile, loadLabel } from "./label.ts";
 import { ROOT_SCRIPT } from "./root.ts";
 import { SOURCE_CONFIG } from "./source-config.ts";
 import { UPLOAD_HREF, UPLOAD_PATH, UPLOAD_SCRIPT } from "./upload.ts";
+import { qrSvg } from "./qr.ts";
 import { type Role, mfaUrl } from "./security.ts";
 import { view } from "./view.ts";
 
@@ -192,7 +193,7 @@ ${twoStepPart}<br>${password}`
       const action = text(form, "action");
       if (action === "two-step-start") {
         await startTwoStep(ctx, session, { current_password: text(form, "current_password") });
-        return done(`/${role}/account`, "Almost there: add the key to your authenticator app and confirm with a code.");
+        return done(`/${role}/account`, "Almost there: scan the QR code with your authenticator app and confirm with a code.");
       }
       if (action === "two-step-confirm") {
         await confirmTwoStep(ctx, session, { code: text(form, "code") });
@@ -228,14 +229,23 @@ ${currentPassword}`, { title, description, class: "narrow",
         footer: html`<button class="btn btn-danger">Turn off</button>` })}</form>`;
     }
     if (state.pending && state.secret) {
-      return card(html`<p><strong>1.</strong> In your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…), add an account and choose to <strong>enter a setup key</strong>. Type or paste this key, with the type <em>time-based</em>:</p>
+      const address = mfaUrl(issuer, session.user.username, state.secret);
+      // Drawn here, on the server: the key goes to no outside service to become a picture.
+      const code = qrSvg(address, 184, "QR code for your authenticator app");
+      const apps = "Google Authenticator, Microsoft Authenticator, Authy, 1Password…";
+      const scan = code === null
+        ? html`<p><strong>1.</strong> In your authenticator app (${apps}), add an account and choose to <strong>enter a setup key</strong>. Type or paste this key, with the type <em>time-based</em>:</p>`
+        : html`<p><strong>1.</strong> In your authenticator app (${apps}), add an account, choose to <strong>scan a QR code</strong> and point the camera of your phone at this one:</p>
+<div class="secret" id="two-step-qr">${new Safe(code)}<p class="muted">No app yet? Install one of those from the app store of your phone first. The camera app alone is not enough: it has to be an authenticator.</p></div>
+<p class="muted">Cannot scan? Choose to <strong>enter a setup key</strong> in the app instead, with the type <em>time-based</em>, and type or paste this key:</p>`;
+      return card(html`${scan}
 <div class="secret"><code id="two-step-key">${state.secret}</code><button type="button" class="btn btn-sm" data-copy="#two-step-key">Copy</button></div>
-<p class="muted">On the device that has the app? <a href="${mfaUrl(issuer, session.user.username, state.secret)}">Open it in the authenticator app</a>.</p>
+<p class="muted">On the device that has the app? <a href="${address}">Open it in the authenticator app</a>.</p>
 <p><strong>2.</strong> Type the 6-digit code the app shows now. Nothing changes at sign-in until you do.</p>
 <form method="post"><input type="hidden" name="action" value="two-step-confirm">
 ${field("two-step-code", "Code from the app", html`<input type="text" id="two-step-code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>`)}
 <div class="actions"><button class="btn btn-primary">Turn on</button></div></form>
-<div class="field">${alert("warn", "This key is the second step itself: whoever has it can make your codes. Do not share it or keep it in a note.")}</div>`,
+<div class="field">${alert("warn", "The QR code and the key are the second step itself: whoever has either can make your codes. Do not share them, photograph them or keep them in a note.")}</div>`,
         { title: `${title}: finish the setup`, class: "narrow",
           footer: html`<form method="post"><input type="hidden" name="action" value="two-step-disable"><button class="btn">${state.required ? "Start over" : "Cancel setup"}</button></form>` });
     }
@@ -746,7 +756,8 @@ ${older}`, { flush: true });
 ${field("username", "Username", html`<input type="text" id="username" name="username" value="${invite.username}" autocomplete="username" readonly>`, "You will sign in with this name.")}
 ${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required autofocus>`, PASSWORD_HINT)}
 ${field("confirm", "Repeat the password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`)}
-<div class="field"><button class="btn btn-primary btn-block">${invite.two_step ? "Create password" : "Create password and sign in"}</button></div></form>`;
+${invite.twoStepOwed ? html`<div class="field">${alert("info", "Next, you will set up two-step verification, which this site requires of every reader. Have your phone at hand, with an authenticator app (Google Authenticator, Microsoft Authenticator, Authy…).")}</div>` : ""}
+<div class="field"><button class="btn btn-primary btn-block">${invite.two_step ? "Create password" : invite.twoStepOwed ? "Create password and continue" : "Create password and sign in"}</button></div></form>`;
     return show({ title: "Create your password", subtitle: `This link works once and expires on ${date(invite.expires_at)} UTC.`, body, url });
   });
 
@@ -756,6 +767,7 @@ ${field("confirm", "Repeat the password", html`<input type="password" id="confir
     const { cookie, twoStepOwed } = await acceptInvite(ctx, request, params.token ?? "", { password: text(form, "password") });
     // With two-step verification on, the link does not sign in: the new password and a code do.
     if (cookie === null) return done("/reader/", "Password created. Sign in with it and the code from your authenticator app.");
+    // Owed: the setup has started, and Your account opens on the QR code to scan.
     return redirect(twoStepOwed ? "/reader/account" : "/reader/home", [cookie]);
   });
 

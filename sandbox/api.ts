@@ -386,6 +386,8 @@ export function registerApi(server: Server, ctx: Ctx): void {
   // The access link: who it is for, and choosing the password (`{ "password": "..." }`),
   // which signs the reader in. The link works once. A reader with two-step verification on is not
   // signed in by it (`signed_in: false`): they sign in with the new password and a code.
+  // With `two_step_setup_required: true`, the setup has started already, which is what the page of
+  // Your account shows (the QR code). Through the API, POST /api/reader/two-step/setup still answers the key.
   route("GET", "/api/reader/invite/:token", async (request, _url, params) => {
     const { username, expires_at } = await findInvite(ctx, request, params.token ?? "");
     return { username, expires_at };
