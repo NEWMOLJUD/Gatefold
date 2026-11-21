@@ -147,7 +147,6 @@ HTML files go through a small template engine before delivery:
 - **Sessions** last 7 days. Readers cannot change their own password; an administrator does it.
 - **Root password:** 5 wrong attempts per hour, then it locks until the next hour.
 - **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
-- **Names in the code:** the project started as *Canone*, and the database and repository keep that name.
 
 ### Commands
 

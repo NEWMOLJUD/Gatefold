@@ -126,7 +126,7 @@ export async function verifyToken(signingKey: string, token: string, now: number
 
 /** One cookie per role: the same person can be signed in as administrator and as reader. */
 export function cookieName(role: Role): string {
-  return role === "admin" ? "canone_admin" : "canone_reader";
+  return role === "admin" ? "moljud_admin" : "moljud_reader";
 }
 
 export function readCookie(request: Request, name: string): string | null {

@@ -13,8 +13,8 @@ import { registerPages } from "./pages.ts";
 //   label.ts     white-label: name, logo and colours read from sites/label/
 //   api.ts       /api/admin, /api/reader and /api/root routes
 export default function main({ server, databases, sites, secrets, cron }: Deps) {
-  // A single database, with the identifier "canone".
-  const ctx: Ctx = { db: databases.open("canone", MIGRATIONS), sites, secrets };
+  // A single database, with the identifier "moljud".
+  const ctx: Ctx = { db: databases.open("moljud", MIGRATIONS), sites, secrets };
 
   registerApi(server, ctx);
   registerPages(server, ctx);
