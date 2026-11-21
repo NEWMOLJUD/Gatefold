@@ -3,7 +3,7 @@
 // Commit this file whenever it changes: Cloudflare deploys from it.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "redoma",
+  "name": "moljud-pages",
   "compatibility_date": "2026-11-01",
   "durable_objects": {
     "bindings": [
@@ -33,7 +33,7 @@
     ]
   },
   "vars": {
-    "REDOMA_NAME": "redoma"
+    "REDOMA_NAME": "moljud-pages"
   },
   "keep_vars": true,
   "observability": {

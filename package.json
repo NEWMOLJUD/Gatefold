@@ -1,5 +1,5 @@
 {
-  "name": "redoma",
+  "name": "moljud-pages",
   "version": "0.1.0",
   "private": true,
   "description": "A TypeScript web server for Cloudflare Workers and Linux, built to be driven by AI coding agents.",

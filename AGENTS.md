@@ -1,4 +1,4 @@
-# Redoma
+# moljud-pages
 
 A TypeScript web server for Cloudflare Workers and Linux. The app lives in a sandbox and reaches the outside world only through `deps`. The user may not be a programmer: keep changes small and explain them plainly.
 
