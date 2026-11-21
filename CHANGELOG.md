@@ -6,6 +6,7 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 
 ### Upgrade notes
 
+- **`npm run update` now updates Gatefold itself**, app and machinery together, from the Gatefold repository. The machinery's own update (straight from Redoma) is `npm run update:engine`, and installations do not need it. An installation made before this version has no `gatefold/` folder: see "Installations made before this folder existed" in `gatefold/README.md`.
 - **The root password must now have at least 32 characters.** With a shorter `GATEFOLD_ROOT_PASSWORD`, `/root/setup` answers that root access is off until a longer one is set where the app runs. Nothing else stops working.
 - **An administrator no longer sets another administrator's password.** `PUT /api/admin/admins/:id` with `password` answers 403 unless it is one's own account. Everyone changes their own password under **Your account**; a lost administrator password is set by root (`PUT /api/root/admins/:id`, or **Set password** on `/root/setup`).
 - **The last administrator who can sign in can no longer be removed** by an administrator (409). Root still can.
@@ -23,6 +24,7 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 - **Access links.** A reader is created with a username and an email, and chooses their own password through a link that works once and expires in 72 hours (`/reader/invite/<token>`). The same link lets a reader choose a new password. `POST` and `DELETE /api/admin/readers/:id/invite` issue and revoke it.
 - **Audit log.** Every change made to the database is recorded in the same operation as the change: who, how they were authenticated, from which address, what and on whom. Sign-ins, refused sign-ins and refused root passwords are recorded too. See it under **Audit log** in the console or at `GET /api/admin/audit`.
 
+- **`npm run update`, `npm run repair` and `npm run doctor`** (the `gatefold/` folder): update an installation to a released version keeping its `sites/` and its data, put the installed version's files back, and check an installation. `gatefold/manifest.json` records the version and a fingerprint of every file of the app.
 - **Limits on guessing.** Wrong passwords are counted per account and per address and block the sign-in for 15 minutes; the root password is counted per address. Blocks are recorded in the audit log.
 - **Your account:** `/admin/account`, `/reader/account` and `PUT /api/<role>/password` change one's own password and sign the other sessions out.
 - **Suspending and reactivating** readers and administrators (`POST /api/admin/{readers,admins}/:id/suspend` and `/reactivate`, and buttons on their pages). Root can reactivate an administrator.

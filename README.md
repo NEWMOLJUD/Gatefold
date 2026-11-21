@@ -1,5 +1,5 @@
 <!-- redoma:project -->
-<!-- Everything in this file sits between the redoma:project markers on purpose: `npm run update` keeps what is inside them. -->
+<!-- Everything in this file sits between the redoma:project markers on purpose: the machinery's own update keeps what is inside them. -->
 <div align="center">
 
 # Gatefold
@@ -222,6 +222,17 @@ HTML files go through a small template engine before delivery:
 | `npm run secret set NAME` / `list` / `remove NAME` | Manage secrets. Values are never shown. |
 | `npm run service:install` / `status` / `remove` | Run as a Linux service. |
 | `npm run watcher:install` / `remove` | Pull new commits and restart the service. |
+| `npm run update` | Bring this installation to the newest Gatefold: the app and the machinery it was tested with. Your `sites/` and your data stay. See [`gatefold/README.md`](gatefold/README.md). |
+| `npm run repair` | Put the files of the installed version back as they shipped. |
+| `npm run doctor` | Say what is wrong or worth knowing about this installation. Changes nothing. |
+
+### Updating
+
+`npm run update` shows the version you have, the one you are getting, what changed between them and every file it will replace, and asks before doing anything. It needs a terminal and a repository with everything committed, so that one command undoes it.
+
+- **Your sources, your brand and your data are not touched.** The one file of `sites/` an update may change is `sites/label/app.css`, because new pages need new style rules: yours is merged with them, and when that does not fit, the new stylesheet is left beside it as `app.css.new`.
+- **Back up before publishing an update.** A new version may add to the database when it first runs, and the old code cannot read what it does not know: after that, going back means restoring the backup.
+- **Publishing through Git:** run the update on your computer, review it, commit and push.
 
 ## Contributing
 
@@ -232,7 +243,7 @@ Issues and pull requests are welcome. The app is in `sandbox/` (TypeScript, no r
 - [SECURITY.md](SECURITY.md): how to report a vulnerability **privately**, and how the app is meant to be trusted.
 - [CHANGELOG.md](CHANGELOG.md): what changed in each version.
 
-Gatefold is built on [Redoma](https://github.com/MateusMoutinhoOrg/Redoma), a TypeScript server template for Cloudflare Workers and Linux; its README is the full manual of the commands above. Running `npm run update` brings Redoma's newer machinery and adds its manual around this text.
+Gatefold is built on [Redoma](https://github.com/MateusMoutinhoOrg/Redoma), a TypeScript server template for Cloudflare Workers and Linux; its README is the full manual of the commands it provides. `npm run update` brings the version of that machinery each Gatefold release was tested with.
 
 ## License
 

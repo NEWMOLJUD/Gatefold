@@ -30,3 +30,6 @@ jobs:
       # `npm run test` regenerates wrangler.jsonc; a difference means it was not committed.
       - name: wrangler.jsonc is up to date
         run: git diff --exit-code -- wrangler.jsonc
+      # The update commands lean on the machinery's own update code and on a few lines of package.json.
+      - name: The Gatefold commands have what they depend on
+        run: node gatefold/update.ts check
