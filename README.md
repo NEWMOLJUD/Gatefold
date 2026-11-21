@@ -202,6 +202,9 @@ HTML files go through a small template engine before delivery:
 - **Readers choose their own password.** Adding a reader gives you a link (`/reader/invite/…`) that works once and expires in 72 hours. Gatefold sends no email: you send the link. For a new password, generate a new link on the reader's page; no administrator ever sees or sets a reader's password.
 - **Usernames** are unique whatever their case: `Ana` and `ana` are the same account.
 - **Audit log:** every change (accounts, permissions, visibility, props, API keys, sign-ins and refused sign-ins) is recorded with who, when and from where, under **Audit log** in the console and at `GET /api/admin/audit`. Entries cannot be edited or removed. They never hold a password, a key or a link.
+  - It also records a reader opening a private source (once an hour for each reader and source), a reader refused a source, access links that do not work and requests refused for coming from another site.
+  - **Export CSV** downloads what the filters show (`GET /api/admin/audit.csv`, up to 5000 entries per file). Exporting is recorded too.
+  - Entries are kept for 180 days and then removed by a daily job, which leaves an entry saying how many it removed. Only whoever holds the root password changes that period, at `/root/setup` (90 to 3650 days): an administrator cannot shorten their own trail.
 - **Root password:** 5 wrong attempts per hour, then it locks until the next hour.
 - **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
 

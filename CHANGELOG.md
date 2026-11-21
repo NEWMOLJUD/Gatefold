@@ -10,7 +10,8 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 - **Usernames are now unique whatever their case.** If an installation has two accounts of the same kind whose names differ only by case, the newer one is renamed on the first start (its name gets a short suffix). Check the list of readers and administrators after updating.
 - The reader and administrator pages use two new rules in `sites/label/app.css` (`input[type=email]` and `td.wrap`). An installation with its own `app.css` should copy them.
 - **New passwords need at least 10 characters** (it was 8) and cannot be the account's name or email. Passwords that already exist keep working.
-- **A Linux server behind a reverse proxy** should say so in a new optional file, `sites/gatefold.json` (see "Behind a reverse proxy" in the README). Without it, the visitor's address is no longer taken from a header the proxy does not set, and it is recorded as unknown.
+- **A Linux server** should say where the visitor's address comes from in a new optional file, `sites/gatefold.json` (see "Behind a reverse proxy" in the README). Until it does, the address recorded is the `CF-Connecting-IP` header of the request, which only Cloudflare can be trusted to set: on a server that is not behind Cloudflare, set `client_ip` to the header your proxy writes, or to `none`.
+- **Audit entries are now removed after 180 days.** Whoever holds the root password can change the period at `/root/setup` (90 to 3650 days).
 - `POST /api/admin/login` and `POST /api/reader/login` now refuse a request a browser says came from another site, as the sign-in pages already did.
 
 ### Added
@@ -18,6 +19,8 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 - **Access links.** A reader is created with a username and an email, and chooses their own password through a link that works once and expires in 72 hours (`/reader/invite/<token>`). The same link lets a reader choose a new password. `POST` and `DELETE /api/admin/readers/:id/invite` issue and revoke it.
 - **Audit log.** Every change made to the database is recorded in the same operation as the change: who, how they were authenticated, from which address, what and on whom. Sign-ins, refused sign-ins and refused root passwords are recorded too. See it under **Audit log** in the console or at `GET /api/admin/audit`.
 
+- **More in the audit log:** a reader opening a private source or being refused one (once an hour for each reader and source), access links that do not work, and requests refused for coming from another site. `GET /api/admin/audit.csv` and the **Export CSV** button download the log; the export is recorded.
+- **Retention policy, set by root only:** `GET` and `PUT /api/root/settings` and a **Policy** card on `/root/setup`.
 - **Security headers on every answer.** `Strict-Transport-Security` where the installation is reached by HTTPS, a strict Content-Security-Policy on API answers, and `frame-ancestors 'self'` on the files of a source.
 - **`sites/gatefold.json`**, optional: where the visitor's address comes from (`client_ip`) and the installation's public address (`public_url`).
 

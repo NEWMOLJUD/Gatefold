@@ -3,7 +3,7 @@
 import type { Database, SqlParam, SqlValue } from "../deps/databases.ts";
 import type { Secrets } from "../deps/secrets.ts";
 import type { Sites } from "../deps/sites.ts";
-import { type Actor, type AuditEntry, type Found, SYSTEM, record, recordAs, recordFound, rootActor, toAuditEntry } from "./audit.ts";
+import { type Actor, type AuditEntry, type Found, SYSTEM, hourOf, record, recordAs, recordFound, recordOnce, rootActor, toAuditEntry, visitor } from "./audit.ts";
 import { type Config, clientIp, publicOrigin, sameOrigin } from "./config.ts";
 import {
   type Claims, type Role, SECRET_MASTER, SECRET_ROOT, SECRET_SIGNING, clearCookie, cookieName, hashApiKey, hashInvite, hashPassword,
@@ -113,6 +113,18 @@ export const MIGRATIONS = [
 )`,
     `CREATE UNIQUE INDEX ${table}_username_nocase ON ${table} (username COLLATE NOCASE)`,
   ]),
+  // Events that repeat (a source opened, a request refused) are written once
+  // per `dedupe` key, which carries the hour: the database refuses the second.
+  `ALTER TABLE audit_log ADD COLUMN dedupe TEXT`,
+  `CREATE UNIQUE INDEX audit_log_dedupe ON audit_log (dedupe) WHERE dedupe IS NOT NULL`,
+  `CREATE INDEX audit_log_target ON audit_log (target_id, id)`,
+  `CREATE INDEX audit_log_actor_id ON audit_log (actor_id, id)`,
+  // What the installation decided about itself (how long the audit log is kept, for example).
+  `CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+)`,
 ];
 
 /** How long a login session lasts. */
@@ -128,6 +140,7 @@ export const ROOT_ATTEMPTS_PER_HOUR = 5;
 export const PAGE_SIZE = 50;
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 
 export interface Ctx {
   db: Database;
@@ -142,9 +155,23 @@ export function ipOf(ctx: Ctx, request: Request): string | null {
   return clientIp(request, ctx.config);
 }
 
-/** A change made with a cookie, a password or a link only counts if the browser says it came from this site. */
-export function requireSameOrigin(ctx: Ctx, request: Request): void {
-  if (!sameOrigin(request, ctx.config)) throw new HttpError(403, "Request refused: it did not come from this site.");
+/**
+ * A change made with a cookie, a password or a link only counts if the browser
+ * says it came from this site. A refusal is written down, once an hour for
+ * each address it comes from: someone is pointing a browser at this site.
+ * `actor` is who the request claims to be, when that is already known.
+ */
+export async function requireSameOrigin(ctx: Ctx, request: Request, actor?: Actor): Promise<void> {
+  if (sameOrigin(request, ctx.config)) return;
+  const ip = ipOf(ctx, request);
+  await ctx.db.batch([
+    recordOnce(actor ?? visitor(ip), "request.refused", `refused:${ip ?? "unknown"}:${hourOf(Date.now())}`, {
+      // An access link is a password in an address: the path is written without it.
+      path: new URL(request.url).pathname.replace(/\/invite\/.*/, "/invite/…").slice(0, 200),
+      origin: (request.headers.get("origin") ?? "").slice(0, 200),
+    }),
+  ]);
+  throw new HttpError(403, "Request refused: it did not come from this site.");
 }
 
 export type Statement = [sql: string, ...params: SqlParam[]];
@@ -324,6 +351,8 @@ export interface Session {
 export interface UserRef {
   sql: string;
   params: SqlParam[];
+  /** How they are authenticated, for the audit rows written together with the reads. */
+  via: "session" | "key";
 }
 
 type Credential = { kind: "session"; claims: Claims } | { kind: "key"; hash: string };
@@ -370,18 +399,18 @@ export async function identify(
       `SELECT u.id, u.username${extra} FROM sessions s JOIN ${table} u ON u.id = s.${column} WHERE s.id = ? AND s.${column} = ? AND s.expires_at > ?`,
       found.claims.sid, found.claims.sub, now,
     ];
-    ref = { sql: `(SELECT ${column} FROM sessions WHERE id = ? AND ${column} = ? AND expires_at > ?)`, params: [found.claims.sid, found.claims.sub, now] };
+    ref = { sql: `(SELECT ${column} FROM sessions WHERE id = ? AND ${column} = ? AND expires_at > ?)`, params: [found.claims.sid, found.claims.sub, now], via: "session" };
   } else {
     principal = [`SELECT u.id, u.username${extra} FROM api_keys k JOIN ${table} u ON u.id = k.${column} WHERE k.key_hash = ?`, found.hash];
-    ref = { sql: `(SELECT ${column} FROM api_keys WHERE key_hash = ?)`, params: [found.hash] };
+    ref = { sql: `(SELECT ${column} FROM api_keys WHERE key_hash = ?)`, params: [found.hash], via: "key" };
   }
   const [who = [], ...rows] = await ctx.db.batch([principal, ...(options.reads?.(ref) ?? [])]);
   const row = who[0];
   if (!row) return { session: null, rows };
-  if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD") requireSameOrigin(ctx, request);
   const user: User = { id: String(row.id), username: String(row.username), props: parseObject(row.props) };
   const viaKey = found.kind === "key";
   const actor: Actor = { role, id: user.id, name: user.username, via: viaKey ? "key" : "session", ip: ipOf(ctx, request) };
+  if (found.kind === "session" && request.method !== "GET" && request.method !== "HEAD") await requireSameOrigin(ctx, request, actor);
   return { session: { role, user, viaKey, actor, rows }, rows };
 }
 
@@ -399,7 +428,7 @@ export interface LoginResult {
  * the account's name when there is one, and never with the password.
  */
 export async function login(ctx: Ctx, request: Request, role: Role, input: Input): Promise<LoginResult> {
-  requireSameOrigin(ctx, request);
+  await requireSameOrigin(ctx, request);
   const name = typeof input.username === "string" ? input.username : "";
   const secret = typeof input.password === "string" ? input.password.slice(0, 256) : "";
   const [row] = await ctx.db.query(`SELECT id, username, password_hash FROM ${TABLE[role].table} WHERE username = ? COLLATE NOCASE`, name);
@@ -423,7 +452,7 @@ export async function login(ctx: Ctx, request: Request, role: Role, input: Input
 
 /** Deletes the cookie's session, if there is one, and returns the cookie that clears the browser. */
 export async function logout(ctx: Ctx, request: Request, role: Role): Promise<string> {
-  requireSameOrigin(ctx, request);
+  await requireSameOrigin(ctx, request);
   const token = readCookie(request, cookieName(role));
   const claims = token ? await verifyToken(ctx.secrets.get(SECRET_SIGNING), token, Date.now()) : null;
   if (claims && claims.role === role) {
@@ -441,7 +470,7 @@ export async function logout(ctx: Ctx, request: Request, role: Role): Promise<st
 
 /** Root password, with a global limit of wrong attempts per hour. */
 export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
-  if (request.method !== "GET") requireSameOrigin(ctx, request);
+  if (request.method !== "GET") await requireSameOrigin(ctx, request, rootActor(ipOf(ctx, request)));
   const hour = Math.floor(Date.now() / HOUR_MS);
   const [row] = await ctx.db.query("SELECT attempts FROM root_attempts WHERE hour = ?", hour);
   if (Number(row?.attempts ?? 0) >= ROOT_ATTEMPTS_PER_HOUR) {
@@ -456,12 +485,77 @@ export async function requireRoot(ctx: Ctx, request: Request): Promise<void> {
   throw new HttpError(401, "Wrong root password.");
 }
 
-/** Scheduled job: expired sessions, expired access links and old root password attempt counts. The audit log is never trimmed. */
+/** Scheduled job, every hour: expired sessions, expired access links and old root password attempt counts. */
 export async function cleanup(ctx: Ctx, time: Date): Promise<void> {
   await ctx.db.batch([
     ["DELETE FROM sessions WHERE expires_at < ?", time.getTime()],
     ["DELETE FROM invites WHERE expires_at < ?", time.getTime()],
     ["DELETE FROM root_attempts WHERE hour < ?", Math.floor(time.getTime() / HOUR_MS) - 24],
+    setSetting("cron_last_run", String(time.getTime()), time.getTime()),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Policy: what only root decides
+// ---------------------------------------------------------------------------
+
+/** How long an audit entry is kept, when root never said otherwise. */
+export const DEFAULT_RETENTION_DAYS = 180;
+export const MIN_RETENTION_DAYS = 90;
+export const MAX_RETENTION_DAYS = 3650;
+/** Old entries removed by one run of the scheduled job. A backlog is cleared over a few days. */
+const PURGE_BATCH = 20_000;
+
+function setSetting(key: string, value: string, now: number): Statement {
+  return ["INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", key, value, now];
+}
+
+/** The retention period as SQL reads it, in days. */
+const RETENTION_SQL = `COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'audit_retention_days'), ${DEFAULT_RETENTION_DAYS})`;
+
+export const POLICY: Statement = [`SELECT ${RETENTION_SQL} AS audit_retention_days`];
+
+export interface Policy {
+  /** Audit entries older than this many days are removed by the scheduled job. */
+  audit_retention_days: number;
+}
+
+export function policy(rows: Row[] | undefined): Policy {
+  return { audit_retention_days: Number(rows?.[0]?.audit_retention_days ?? DEFAULT_RETENTION_DAYS) };
+}
+
+/**
+ * Only root sets the policy: an administrator who could shorten the retention
+ * could make their own trail disappear sooner.
+ */
+export async function setPolicy(ctx: Ctx, actor: Actor, input: Input): Promise<Policy> {
+  const days = input.audit_retention_days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < MIN_RETENTION_DAYS || days > MAX_RETENTION_DAYS) {
+    throw new HttpError(400, `"audit_retention_days" must be a whole number from ${MIN_RETENTION_DAYS} to ${MAX_RETENTION_DAYS}.`);
+  }
+  await ctx.db.batch([
+    record(actor, "settings.updated", null, { audit_retention_days: days }),
+    setSetting("audit_retention_days", String(days), Date.now()),
+  ]);
+  return { audit_retention_days: days };
+}
+
+/**
+ * Scheduled job, once a day: audit entries older than the retention period
+ * are removed, and a row says how many went and from which date back. That
+ * row is the only trace of them, so it is written first, in the same operation.
+ */
+export async function purgeAudit(ctx: Ctx, time: Date): Promise<void> {
+  const now = time.getTime();
+  const cutoff = `(? - ${RETENTION_SQL} * ${DAY_MS})`;
+  const old = `SELECT id FROM audit_log WHERE at < ${cutoff} ORDER BY id LIMIT ${PURGE_BATCH}`;
+  await ctx.db.batch([
+    [
+      "INSERT INTO audit_log (at, actor_role, actor_name, via, action, details) " +
+        `SELECT ?, 'system', 'system', 'system', 'audit.purged', json_object('rows', n, 'older_than', ${cutoff}, 'retention_days', ${RETENTION_SQL}) FROM (SELECT COUNT(*) AS n FROM (${old})) WHERE n > 0`,
+      now, now, now,
+    ],
+    [`DELETE FROM audit_log WHERE id IN (${old})`, now],
   ]);
 }
 
@@ -880,6 +974,17 @@ interface IssuedInvite extends Invite {
 
 const INVALID_INVITE = "This link is not valid any more: it was already used, replaced or has expired. Ask your administrator for a new one.";
 
+/**
+ * A link that does not work is written down once an hour for each address it
+ * comes from, and never with the link: it may be a reader with an old link,
+ * or someone trying links.
+ */
+async function invalidInvite(ctx: Ctx, request: Request): Promise<never> {
+  const ip = ipOf(ctx, request);
+  await ctx.db.batch([recordOnce(visitor(ip, "link"), "invite.invalid", `invite:${ip ?? "unknown"}:${hourOf(Date.now())}`)]);
+  throw new HttpError(404, INVALID_INVITE);
+}
+
 /** A reader has one link at a time: a new one replaces the one before it. */
 async function issueInvite(ctx: Ctx, actor: Actor, readerId: string, now: number): Promise<IssuedInvite> {
   const token = newInviteToken();
@@ -927,13 +1032,13 @@ export function inviteUrl(ctx: Ctx, request: Request, token: string): string {
  * Whose link this is. Whoever holds the link is not signed in: the name and
  * the expiry are all they learn. `hash` is how the database knows the link.
  */
-export async function findInvite(ctx: Ctx, token: string): Promise<{ id: string; username: string; email: string | null; expires_at: number; hash: string }> {
+export async function findInvite(ctx: Ctx, request: Request, token: string): Promise<{ id: string; username: string; email: string | null; expires_at: number; hash: string }> {
   const hash = await hashInvite(ctx.secrets.get(SECRET_MASTER), token.slice(0, 128));
   const [row] = await ctx.db.query(
     "SELECT u.id, u.username, u.email, i.expires_at FROM invites i JOIN readers u ON u.id = i.reader_id WHERE i.token_hash = ? AND i.expires_at > ?",
     hash, Date.now(),
   );
-  if (!row) throw new HttpError(404, INVALID_INVITE);
+  if (!row) return invalidInvite(ctx, request);
   return { id: String(row.id), username: String(row.username), email: typeof row.email === "string" ? row.email : null, expires_at: Number(row.expires_at), hash };
 }
 
@@ -943,8 +1048,8 @@ export async function findInvite(ctx: Ctx, token: string): Promise<{ id: string;
  * they are signed in.
  */
 export async function acceptInvite(ctx: Ctx, request: Request, token: string, input: Input): Promise<LoginResult> {
-  requireSameOrigin(ctx, request);
-  const reader = await findInvite(ctx, token);
+  await requireSameOrigin(ctx, request);
+  const reader = await findInvite(ctx, request, token);
   const hash = await hashPassword(ctx.secrets.get(SECRET_MASTER), password(input.password, [reader.username, reader.email]));
   const tokenHash = reader.hash;
   const now = Date.now();
@@ -959,7 +1064,7 @@ export async function acceptInvite(ctx: Ctx, request: Request, token: string, in
     [`INSERT INTO sessions (id, reader_id, created_at, expires_at) SELECT ?, reader_id, ?, ? FROM invites WHERE token_hash = ? AND expires_at > ?`, sid, now, now + SESSION_MS, tokenHash, now],
     ["DELETE FROM invites WHERE token_hash = ?", tokenHash],
   ]);
-  if (changed.length === 0) throw new HttpError(404, INVALID_INVITE);
+  if (changed.length === 0) return invalidInvite(ctx, request);
   const cookie = await signToken(ctx.secrets.get(SECRET_SIGNING), { sid, sub: reader.id, role: "reader", exp: Math.floor((now + SESSION_MS) / 1000) });
   return { cookie: sessionCookie("reader", cookie, SESSION_MS / 1000), user: { id: reader.id, username: reader.username } };
 }
@@ -1078,6 +1183,47 @@ export function listAuditQuery(filters: URLSearchParams): Statement {
   return [`SELECT * FROM audit_log${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`, ...params, PAGE_SIZE + 1];
 }
 
+/** Entries in one exported file. A longer log is exported in parts: see `next_before`. */
+export const EXPORT_ROWS = 5000;
+
+/** A value as a CSV cell. One that a spreadsheet would run as a formula gets an apostrophe in front. */
+function csvCell(column: string): string {
+  const value = `COALESCE(${column}, '')`;
+  return `'"' || replace(CASE WHEN substr(${value}, 1, 1) IN ('=', '+', '-', '@', char(9), char(13)) THEN '''' || ${value} ELSE ${value} END, '"', '""') || '"'`;
+}
+
+export const AUDIT_CSV_HEADER = "id,at_utc,actor_role,actor_id,actor_name,via,ip,action,target_type,target_id,target_name,details";
+
+/**
+ * The same listing as `listAuditQuery`, with each entry already written as a
+ * CSV line by the database. The second statement writes down that the log was
+ * exported, by whom, with which filters and how many entries.
+ */
+export function exportAuditQueries(actor: Actor, filters: URLSearchParams): Statement[] {
+  const [listing, ...params] = listAuditQuery(filters);
+  const limited = params.slice(0, -1);
+  const rows = listing.replace("SELECT *", "SELECT id").replace(/LIMIT \?$/, `LIMIT ${EXPORT_ROWS + 1}`);
+  const line = ["id", "strftime('%Y-%m-%dT%H:%M:%SZ', at / 1000, 'unixepoch')",
+    ...["actor_role", "actor_id", "actor_name", "via", "ip", "action", "target_type", "target_id", "target_name", "details"].map(csvCell)].join(" || ',' || ");
+  const used: Record<string, string> = {};
+  for (const [name, value] of filters) used[name.slice(0, 40)] = value.slice(0, 200);
+  return [
+    [`SELECT id, ${line} AS line FROM audit_log WHERE id IN (${rows}) ORDER BY id DESC`, ...limited],
+    [
+      "INSERT INTO audit_log (at, actor_role, actor_id, actor_name, via, ip, action, details) " +
+        `SELECT ?, ?, ?, ?, ?, ?, 'audit.exported', json_object('rows', MIN(COUNT(*), ${EXPORT_ROWS}), 'filters', json(?)) FROM (${rows})`,
+      Date.now(), actor.role, actor.id, actor.name.slice(0, 64), actor.via, actor.ip, JSON.stringify(used), ...limited,
+    ],
+  ];
+}
+
+/** The file, and what to send as `before` for the next part (`null` when this is the last). */
+export function auditCsv(rows: Row[]): { text: string; next_before: number | null } {
+  const lines = rows.slice(0, EXPORT_ROWS).map((row) => String(row.line));
+  // The byte order mark is what makes a spreadsheet read the accents right.
+  return { text: `﻿${[AUDIT_CSV_HEADER, ...lines].join("\r\n")}\r\n`, next_before: rows.length > EXPORT_ROWS ? Number(rows[EXPORT_ROWS - 1]!.id) : null };
+}
+
 export interface AuditPage {
   items: AuditEntry[];
   /** What to send as `before` to read the older entries; `null` at the end. */
@@ -1099,6 +1245,34 @@ export function readableSourcesQuery(user: UserRef): Statement {
     `SELECT s.alias, s.public FROM sources s WHERE s.public = 1 OR EXISTS (SELECT 1 FROM permissions p WHERE p.source_alias = s.alias AND p.reader_id = ${user.sql}) ORDER BY s.alias`,
     ...user.params,
   ];
+}
+
+/**
+ * The audit rows of a signed-in reader asking for a source, written with the
+ * reads of the same request: `read` when the source is private and theirs to
+ * open, `denied` when it is not (or does not exist). Once an hour for each
+ * reader and source, however many files they open.
+ */
+export function sourceAccessRows(ctx: Ctx, request: Request, alias: string, user: UserRef): { read: Statement; denied: Statement } {
+  const now = Date.now();
+  const hour = hourOf(now);
+  const ip = ipOf(ctx, request);
+  // What is asked for is typed by the reader: only something shaped like an alias is written down.
+  const name = ALIAS.test(alias) ? alias.slice(0, 64) : "(invalid)";
+  const allowed = "EXISTS (SELECT 1 FROM permissions p WHERE p.source_alias = s.alias AND p.reader_id = u.id)";
+  const columns = "(at, actor_role, actor_id, actor_name, via, ip, action, target_type, target_id, target_name, dedupe)";
+  return {
+    read: [
+      `INSERT OR IGNORE INTO audit_log ${columns} SELECT ?, 'reader', u.id, u.username, ?, ?, 'source.read', 'source', s.alias, s.alias, 'read:' || u.id || ':' || s.alias || ':' || ? ` +
+        `FROM readers u JOIN sources s ON s.alias = ? WHERE u.id = ${user.sql} AND s.public = 0 AND ${allowed}`,
+      now, user.via, ip, hour, alias, ...user.params,
+    ],
+    denied: [
+      `INSERT OR IGNORE INTO audit_log ${columns} SELECT ?, 'reader', u.id, u.username, ?, ?, 'source.denied', 'source', NULL, ?, 'denied:' || u.id || ':' || ? || ':' || ? ` +
+        `FROM readers u WHERE u.id = ${user.sql} AND NOT EXISTS (SELECT 1 FROM sources s WHERE s.alias = ? AND (s.public = 1 OR ${allowed}))`,
+      now, user.via, ip, name, name, hour, ...user.params, alias,
+    ],
+  };
 }
 
 export function readableSources(rows: Row[] | undefined): { alias: string; public: boolean }[] {

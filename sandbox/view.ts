@@ -1,7 +1,7 @@
 // Serving the sources' files: permission, reading the folder, merging the
 // props and rendering. A single database round trip per file; the rendering
 // settings come from the source's source.json.
-import { ALIAS, type Ctx, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, identify, platformProps, redirect, sourceSettings } from "./core.ts";
+import { ALIAS, type Ctx, HttpError, PLATFORM_PROPS, Reply, type Statement, type UserRef, identify, platformProps, redirect, sourceAccessRows, sourceSettings } from "./core.ts";
 import { SOURCES_FOLDER, SOURCE_CONFIG } from "./source-config.ts";
 import { TemplateError, render } from "./template.ts";
 
@@ -32,7 +32,11 @@ export async function view(ctx: Ctx, request: Request, alias: string, rest: stri
   const url = new URL(request.url);
   const { session, rows } = await identify(ctx, request, "reader", {
     allowKey: mode === "api",
-    reads: (user) => [sourceQuery(alias, user), PLATFORM_PROPS],
+    // The last two write down that a reader opened a private source, or was refused one: once an hour each.
+    reads: (user) => {
+      const access = sourceAccessRows(ctx, request, alias, user);
+      return [sourceQuery(alias, user), PLATFORM_PROPS, access.read, access.denied];
+    },
     visitorReads: [sourceQuery(alias, null), PLATFORM_PROPS],
   });
   if (mode === "api" && !session) throw new HttpError(401, "Not authenticated.");

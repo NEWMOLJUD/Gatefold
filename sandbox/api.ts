@@ -11,7 +11,7 @@ import type { Server } from "../deps/server.ts";
 import {
   type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, type Session, type Statement, type UserRef, acceptInvite, accountQueries, accountsPage,
   apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
-  identify, inviteUrl, ipOf, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
+  identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, exportAuditQueries, policy, setPolicy, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, requireRoot, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
@@ -198,6 +198,23 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return auditPage(session.rows[0] ?? []);
   });
 
+  // The same listing as a CSV file, for a spreadsheet or an outside auditor: up to 5000 entries, with the same
+  // filters. When there are more, the `x-gatefold-next-before` header says what to send as `before` for the next
+  // part. Exporting is itself written to the log.
+  route("GET", "/api/admin/audit.csv", async (request, url) => {
+    const { actor } = await enter(request, "admin");
+    const [rows = []] = await ctx.db.batch(exportAuditQueries(actor, url.searchParams));
+    const file = auditCsv(rows);
+    return new Response(file.text, {
+      headers: {
+        ...NO_STORE,
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`,
+        ...(file.next_before === null ? {} : { "x-gatefold-next-before": String(file.next_before) }),
+      },
+    });
+  });
+
   // Reader -------------------------------------------------------------------
 
   route("GET", "/api/reader/sources", async (request) => {
@@ -215,8 +232,8 @@ export function registerApi(server: Server, ctx: Ctx): void {
 
   // The access link: who it is for, and choosing the password (`{ "password": "..." }`),
   // which signs the reader in. The link works once.
-  route("GET", "/api/reader/invite/:token", async (_request, _url, params) => {
-    const { username, expires_at } = await findInvite(ctx, params.token ?? "");
+  route("GET", "/api/reader/invite/:token", async (request, _url, params) => {
+    const { username, expires_at } = await findInvite(ctx, request, params.token ?? "");
     return { username, expires_at };
   });
 
@@ -238,6 +255,18 @@ export function registerApi(server: Server, ctx: Ctx): void {
   route("POST", "/api/root/admins", async (request) => {
     await requireRoot(ctx, request);
     return Response.json(await createAccount(ctx, rootActor(ipOf(ctx, request)), "admin", await body(request)), { status: 201, headers: NO_STORE });
+  });
+
+  // The policy: what an administrator must not be able to change about how they are watched.
+  // `audit_retention_days`: audit entries older than this are removed (90 to 3650).
+  route("GET", "/api/root/settings", async (request) => {
+    await requireRoot(ctx, request);
+    return policy(await ctx.db.query(...POLICY));
+  });
+
+  route("PUT", "/api/root/settings", async (request) => {
+    await requireRoot(ctx, request);
+    return setPolicy(ctx, rootActor(ipOf(ctx, request)), await body(request));
   });
 
   route("DELETE", "/api/root/admins/:id", async (request, _url, params) => {

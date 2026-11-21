@@ -2,7 +2,7 @@ import type { Deps } from "../deps/index.ts";
 import type { Server } from "../deps/server.ts";
 import { registerApi } from "./api.ts";
 import { DEFAULT_CONFIG, loadConfig, withHeaders } from "./config.ts";
-import { type Ctx, MIGRATIONS, cleanup } from "./core.ts";
+import { type Ctx, MIGRATIONS, cleanup, purgeAudit } from "./core.ts";
 import { registerPages } from "./pages.ts";
 
 // Gatefold: publishes and manages read-only sites.
@@ -37,4 +37,6 @@ export default function main({ server, databases, sites, secrets, cron }: Deps) 
 
   // Hourly cleanup of expired sessions and old root password attempt counts.
   cron.schedule("17 * * * *", (time) => cleanup(ctx, time));
+  // Once a day: audit entries older than the retention period, which only root sets.
+  cron.schedule("17 3 * * *", (time) => purgeAudit(ctx, time));
 }

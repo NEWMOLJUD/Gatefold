@@ -2,7 +2,7 @@
 // same operation of `core.ts` that the API calls.
 import type { Server } from "../deps/server.ts";
 import {
-  ACCOUNT_ROWS, type Ctx, HttpError, type Invite, PASSWORD_HINT, PASSWORD_MIN, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
+  ACCOUNT_ROWS, type Ctx, EXPORT_ROWS, HttpError, type Invite, MAX_RETENTION_DAYS, MIN_RETENTION_DAYS, PASSWORD_HINT, PASSWORD_MIN, PLATFORM_PROPS, POLICY, Reply, policy, sourceAccessRows, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
   accountsPage, apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
   identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, redirect, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
@@ -487,8 +487,11 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
   };
 
   route("GET", "/admin/audit", async (request, url) => {
-    const session = await enter(request, "admin", () => [listAuditQuery(url.searchParams)]);
+    const session = await enter(request, "admin", () => [listAuditQuery(url.searchParams), POLICY]);
     const list = auditPage(session.rows[0] ?? []);
+    const kept = policy(session.rows[1]).audit_retention_days;
+    const exported = new URLSearchParams(url.searchParams);
+    for (const name of ["ok", "error"]) exported.delete(name);
     const value = (name: string): string => url.searchParams.get(name) ?? "";
     const filtered = ["action", "action_prefix", "actor", "actor_id", "target", "created_from", "created_to"].some((name) => value(name) !== "");
     // The log is read from the newest entry back: "Older" continues from the last row shown.
@@ -519,7 +522,8 @@ ${list.items.map((entry) => html`<tr><td>${date(entry.at)}</td>
 ${older}`, { flush: true });
     return adminPage(session, url, {
       title: "Audit log", body, active: "/admin/audit",
-      subtitle: "Every change made to this installation: who, when and what. Entries cannot be edited or removed here.",
+      subtitle: `Every change made to this installation: who, when and what. Entries cannot be edited or removed here; they are kept for ${kept} days, a period only root can change.`,
+      actions: html`<a class="btn" href="/api/admin/audit.csv${exported.size > 0 ? `?${exported.toString()}` : ""}" title="Up to ${EXPORT_ROWS} entries, with the filters in use">Export CSV</a>`,
     });
   });
 
@@ -527,10 +531,10 @@ ${older}`, { flush: true });
   // The access link: a reader chooses their password. No sign-in: the link is the credential.
   // -------------------------------------------------------------------------
 
-  route("GET", "/reader/invite/:token", async (_request, url, params) => {
+  route("GET", "/reader/invite/:token", async (request, url, params) => {
     let invite: Awaited<ReturnType<typeof findInvite>>;
     try {
-      invite = await findInvite(ctx, params.token ?? "");
+      invite = await findInvite(ctx, request, params.token ?? "");
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
       return show({ title: "This link is not valid", subtitle: error.message, body: html`<a class="btn" href="/reader/">Go to sign-in</a>`, status: error.status });
@@ -590,8 +594,8 @@ ${field("confirm", "Repeat the password", html`<input type="password" id="confir
 
   // The source inside an iframe, under the reader's top bar. The files themselves still come from /reader/view/.
   route("GET", "/reader/frame/:alias", async (request, url, params) => {
-    const session = await enter(request, "reader", (user) => [readableSourcesQuery(user)]);
     const alias = params.alias ?? "";
+    const session = await enter(request, "reader", (user) => [readableSourcesQuery(user), sourceAccessRows(ctx, request, alias, user).denied]);
     // A nonexistent alias and a private alias get the same answer, so aliases are not revealed.
     if (!readableSources(session.rows[0]).some((source) => source.alias === alias)) throw new HttpError(403, "You do not have access to this source.");
     return show({
@@ -619,6 +623,11 @@ ${field("username", "Username", html`<input type="text" id="username" autocomple
 ${field("password", "Password", html`<input type="password" id="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`, PASSWORD_HINT)}
 <div class="field"><button class="btn btn-primary">Create administrator</button></div></form>`, { title: "Create administrator" })}
 ${card(html`<div class="table-wrap"><table id="admins"></table></div>`, { title: "Administrators", flush: true })}
+${card(html`<form id="policy">
+${field("retention", "Keep audit entries for (days)", html`<input type="number" id="retention" min="${MIN_RETENTION_DAYS}" max="${MAX_RETENTION_DAYS}" step="1" required>`,
+  `From ${MIN_RETENTION_DAYS} to ${MAX_RETENTION_DAYS} days. Older entries are removed once a day, and the removal is itself recorded.`)}
+<div class="field"><button class="btn btn-primary">Save policy</button></div></form>`,
+  { title: "Policy", description: "Set here, with the root password, so that no administrator can shorten their own trail." })}
 <p class="auth-alt"><a href="/admin/">Go to the administrator sign-in</a></p></div>
 <noscript>${alert("danger", "This page needs JavaScript.")}</noscript>`;
     return show({

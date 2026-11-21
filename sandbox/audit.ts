@@ -2,20 +2,26 @@
 // the same transaction as the change itself. If the change is undone, so is
 // its row; if the row cannot be written, the change does not happen.
 //
-// Rows are only ever added. Nothing in the app updates or deletes them, and
-// they never hold a password, an API key or an access link.
+// Rows are only ever added. Nothing an administrator can reach updates or
+// deletes them, and they never hold a password, an API key or an access link.
+// The one thing that removes rows is time: the scheduled job deletes those
+// older than the retention period, which only root sets, and leaves a row
+// saying how many it removed.
 import type { SqlParam, SqlValue } from "../deps/databases.ts";
 
 type Statement = [sql: string, ...params: SqlParam[]];
 
 /** Who made a change. */
 export interface Actor {
-  /** "system" is the app itself (a new folder detected); "root" is whoever holds the root password. */
-  role: "admin" | "reader" | "root" | "system";
+  /**
+   * "system" is the app itself (a new folder detected); "root" is whoever
+   * holds the root password; "visitor" is someone who is not signed in.
+   */
+  role: "admin" | "reader" | "root" | "system" | "visitor";
   id: string | null;
   name: string;
   /** How they proved who they are. */
-  via: "session" | "key" | "password" | "root-password" | "link" | "system";
+  via: "session" | "key" | "password" | "root-password" | "link" | "system" | "none";
   ip: string | null;
 }
 
@@ -41,6 +47,13 @@ export const ACTIONS = {
   "platform.props.updated": "Platform props changed",
   "api_key.created": "API key generated",
   "api_key.revoked": "API key revoked",
+  "source.read": "Private source opened",
+  "source.denied": "Source refused: no permission",
+  "invite.invalid": "Invalid access link tried",
+  "request.refused": "Request from another site refused",
+  "audit.exported": "Audit log exported",
+  "audit.purged": "Old audit entries removed",
+  "settings.updated": "Policy changed",
 } as const;
 
 export type Action = keyof typeof ACTIONS;
@@ -48,6 +61,16 @@ export type Action = keyof typeof ACTIONS;
 export type TargetType = "admin" | "reader" | "source" | "platform" | "api_key";
 
 export const SYSTEM: Actor = { role: "system", id: null, name: "system", via: "system", ip: null };
+
+/** Someone who is not signed in. */
+export function visitor(ip: string | null, via: Actor["via"] = "none"): Actor {
+  return { role: "visitor", id: null, name: "visitor", via, ip };
+}
+
+/** The hour a moment belongs to: what "once an hour" is counted by. */
+export function hourOf(milliseconds: number): number {
+  return Math.floor(milliseconds / 3_600_000);
+}
 
 /** Whoever holds the root password. `ip` is the visitor's address: see `clientIp` in config.ts. */
 export function rootActor(ip: string | null): Actor {
@@ -70,6 +93,18 @@ export function record(
   return [
     `INSERT INTO audit_log ${COLUMNS} VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ...head(actor, action), target?.type ?? null, target?.id ?? null, target?.name ?? null, JSON.stringify(details),
+  ];
+}
+
+/**
+ * A log row for something that repeats (a refused request, an invalid link):
+ * of all the rows with the same `key`, only the first is kept. Put the hour in
+ * the key and the event is written once an hour, however often it happens.
+ */
+export function recordOnce(actor: Actor, action: Action, key: string, details: Record<string, unknown> = {}): Statement {
+  return [
+    "INSERT OR IGNORE INTO audit_log (at, actor_role, actor_id, actor_name, via, ip, action, details, dedupe) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ...head(actor, action), JSON.stringify(details), key.slice(0, 200),
   ];
 }
 

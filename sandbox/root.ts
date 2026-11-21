@@ -66,6 +66,9 @@ export const ROOT_SCRIPT = String.raw`"use strict";
         table.appendChild(row);
       });
       if (data.items.length === 0) cell(table.appendChild(document.createElement("tr")), "No administrators yet. Create the first one above.");
+      return call("GET", "/api/root/settings");
+    }).then(function (settings) {
+      document.getElementById("retention").value = settings.audit_retention_days;
     });
   }
 
@@ -88,6 +91,13 @@ export const ROOT_SCRIPT = String.raw`"use strict";
         say("Administrator created. They can now sign in at /admin/.", "ok");
         return load();
       })
+      .catch(failed);
+  });
+
+  document.getElementById("policy").addEventListener("submit", function (event) {
+    event.preventDefault();
+    call("PUT", "/api/root/settings", { audit_retention_days: Number(document.getElementById("retention").value) })
+      .then(function (settings) { say("Policy saved: audit entries are kept for " + settings.audit_retention_days + " days.", "ok"); })
       .catch(failed);
   });
 
