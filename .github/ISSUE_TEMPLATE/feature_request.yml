@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: checkboxes
+    id: limits
+    attributes:
+      label: Project limits
+      description: Moljud Pages keeps a deliberately small scope (see CONTRIBUTING.md).
+      options:
+        - label: This fits the limits - a single SQLite database, no object storage, no runtime dependencies.

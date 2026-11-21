@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "tools",
+    "selftest/run.ts",
+    "*.ts",
+    "../scripts",
+    "../deps"
+  ]
+}

@@ -1,0 +1,50 @@
+/*
+ * Your brand's look. Every system page (sign-in, administrator console,
+ * reader library) loads this file after the built-in stylesheet, so whatever
+ * you set here wins. Change the values, publish, done.
+ *
+ * It does not touch the sites you publish in sites/<alias>/: those keep
+ * their own CSS.
+ */
+
+/* Typefaces, served from this folder. To use your own, replace the files
+   and the names below. */
+@font-face { font-family: "Plus Jakarta Sans"; font-weight: 400 800; font-display: swap; src: url("/label/plus-jakarta-sans.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 400 800; font-display: swap; src: url("/label/jetbrains-mono.woff2") format("woff2"); }
+
+:root {
+  /* Buttons and highlights. */
+  --brand: #ff7348;
+  /* Text on top of --brand. */
+  --brand-contrast: #0a0a0b;
+
+  /* Sidebar, top bar and the panel beside the sign-in form.
+     Your logo sits on this colour: pick one it reads well on. */
+  --brand-surface: #0a0a0b;
+  /* Text and icons on top of --brand-surface. */
+  --brand-surface-ink: #ffffff;
+
+  /* Roundness of cards: 0 for square, 20px for soft. */
+  --radius: 20px;
+
+  --font: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* The same choices for visitors whose device is in dark mode. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #ff7348;
+    --brand-contrast: #0a0a0b;
+    --brand-surface: #050505;
+    --brand-surface-ink: #ffffff;
+  }
+}
+
+/*
+ * Other variables you may override (see sandbox/styles.ts for the defaults):
+ *   --bg  --surface  --surface-2  --field  --ink  --muted  --line
+ *   --ok  --ok-bg  --danger  --danger-bg  --warn  --warn-bg  --shadow
+ *   --radius-control (fields, alerts)  --radius-pill (buttons, badges)
+ * Any other CSS rule is welcome here too.
+ */

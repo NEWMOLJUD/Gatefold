@@ -1,0 +1,47 @@
+name: Bug report
+description: Something does not work as the README says it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time to report this.
+        **Never paste secrets, passwords, API keys or the content of private sites.** For security problems, use the private report linked on the previous page instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to /admin/...
+        2. Press ...
+        3. See the error ...
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does the app run?
+      options:
+        - Cloudflare Workers
+        - Linux server (npm run service:install)
+        - My computer (npm run dev)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The "version" in package.json, or the commit you are on.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or logs
+      description: Remove anything private before pasting.
+      render: text
