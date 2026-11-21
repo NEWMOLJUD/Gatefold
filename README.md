@@ -32,6 +32,9 @@ Put a static site in a folder, commit it, and Moljud Pages serves it behind a si
 
 You need [Node.js](https://nodejs.org) 22.18 or newer.
 
+> [!TIP]
+> No terminal? Follow [Publish without a terminal](#publish-without-a-terminal) instead: everything is done in the browser.
+
 **1. Create your repository.** On GitHub press **Use this template** and choose **Private**.
 
 > [!WARNING]
@@ -80,6 +83,47 @@ npm run dev
 3. Under **Readers**, add a reader and tick `example`.
 4. Sign in as that reader at `/reader/`.
 
+## Publish without a terminal
+
+You can publish from the GitHub and Cloudflare websites alone, with nothing installed on your computer.
+
+**1. Create your repository.** On GitHub press **Use this template** and choose **Private**. Whoever can read the repository can read every site in it.
+
+**2. Generate the three keys.** The app needs three secrets, and each one is simply a long random text. Generate **three different values**, one for each name in the [table above](#quick-start):
+
+- [Bitwarden Password Generator](https://bitwarden.com/password-generator/)
+- [1Password Password Generator](https://1password.com/password-generator/)
+
+Both generate the value inside your browser. Set the length to **40 characters or more** and use only letters and digits, so nothing is lost when you copy and paste.
+
+Prefer not to use a website? Open your browser's console (press **F12**, then **Console**), paste this line and press Enter. Run it three times, once per key, and copy the text between the quotes:
+
+```js
+crypto.randomUUID() + crypto.randomUUID()
+```
+
+> [!IMPORTANT]
+> Save the three values in a password manager before going on. Cloudflare never shows a secret again, and if `MOLJUD_PAGES_MASTER_KEY` is lost or replaced, every password and API key stops working.
+
+**3. Create the Worker.** In the [Cloudflare dashboard](https://dash.cloudflare.com): **Workers & Pages → Create application → GitHub**, pick your repository, name the Worker **`moljud-pages`** and leave the build command empty.
+
+> [!NOTE]
+> The name must be exactly `moljud-pages`, because that is the name written in `wrangler.jsonc`. A different name needs `npm run rename` in a terminal, once.
+
+**4. Add the secrets.** In **Workers & Pages → your Worker → Settings → Variables and Secrets**, press **Add**, choose the type **Secret** (not *Text*, which leaves the value visible), and create these three, each with one of the values you generated. Then press **Deploy**.
+
+```
+MOLJUD_PAGES_ROOT_PASSWORD
+MOLJUD_PAGES_MASTER_KEY
+MOLJUD_PAGES_SIGNING_KEY
+```
+
+The names must be typed exactly like this. The first publication happens before the secrets exist, so until this step is done, signing in and `/root/setup` answer with an error: that is expected.
+
+**5. Create the first accounts.** Open the address Cloudflare gave your Worker and follow step 5 of the [Quick start](#quick-start): at `/root/setup`, the root password is the value you gave `MOLJUD_PAGES_ROOT_PASSWORD`.
+
+From here on, every push to the main branch publishes, and files can be added to `sites/` on the GitHub website itself.
+
 ## Add your sites
 
 Copy each site into its own folder under `sites/` (lowercase letters, digits and hyphens), commit and publish. Then register the folder under **Sources** in the console: until then it is invisible.
@@ -107,7 +151,7 @@ Name, logo, favicon, colours and fonts are in [`sites/label/`](sites/label/READM
 
 The three secrets must exist **where the app runs**:
 
-- **Through Git:** add them in the dashboard, **Workers & Pages → your Worker → Settings → Variables and Secrets → Add**, type **Secret**.
+- **Through Git:** add them in the dashboard, **Workers & Pages → your Worker → Settings → Variables and Secrets → Add**, type **Secret**. [Publish without a terminal](#publish-without-a-terminal) shows how to generate the values in the browser.
 - **From a terminal:** `npm run secret set NAME` already sent them.
 - **Linux server:** run `npm run secret set NAME` on the server.
 
