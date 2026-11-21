@@ -6,6 +6,7 @@ import {
   accountsPage, apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
   identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, redirect, revokeInvite, type TwoStep, confirmTwoStep, disableTwoStep, startTwoStep, twoStep, twoStepQuery, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, updateAccount, updateSource,
+  READER_SETTINGS, TwoStepRequired, readerSettings, resetTwoStep, setReaderSettings,
 } from "./core.ts";
 import { ACTIONS, type AuditEntry } from "./audit.ts";
 import { JS_PATH, type PageOptions, Safe, alert, asset, badge, card, date, empty, field, html, icon, page, pager } from "./html.ts";
@@ -76,6 +77,8 @@ export function registerPages(server: Server, ctx: Ctx): void {
         return await handler(request, url, params);
       } catch (error) {
         if (error instanceof Reply) return error.response;
+        // A reader who has not set up the two-step verification required of them has one place to go.
+        if (error instanceof TwoStepRequired) return redirect("/reader/account");
         if (!(error instanceof HttpError)) throw error;
         if (request.method === "POST") {
           url.searchParams.delete("ok");
@@ -95,10 +98,11 @@ export function registerPages(server: Server, ctx: Ctx): void {
 
   /**
    * Requires the session of the role; without it, goes to sign-in. The reads
-   * share the same trip to the database.
+   * share the same trip to the database. `duringSetup` is for Your account,
+   * where a reader sets up the two-step verification required of them.
    */
-  const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const { session } = await identify(ctx, request, role, { allowKey: false, reads });
+  const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[], duringSetup = false): Promise<Session> => {
+    const { session } = await identify(ctx, request, role, { allowKey: false, reads, duringSetup });
     if (!session) throw new Reply(redirect(LOGIN[role].path));
     return session;
   };
@@ -127,8 +131,8 @@ export function registerPages(server: Server, ctx: Ctx): void {
       const body = html`<form method="post">
 ${field("username", "Username", html`<input type="text" id="username" name="username" autocomplete="username" required autofocus>`)}
 ${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="current-password" required>`)}
-${role === "admin" ? field("code", "Verification code", html`<input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Only with two-step verification">`,
-  "Leave it empty unless you turned on two-step verification.") : ""}
+${field("code", "Verification code", html`<input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Only with two-step verification">`,
+  "Leave it empty unless you turned on two-step verification.")}
 <div class="field"><button class="btn btn-primary btn-block">Sign in</button></div></form>
 <p class="auth-alt">${role === "reader"
   ? html`Managing this installation? <a href="/admin/">Administrator sign-in</a>`
@@ -138,8 +142,8 @@ ${role === "admin" ? field("code", "Verification code", html`<input type="text" 
 
     route("POST", path, async (request, url) => {
       const form = await request.formData();
-      const { cookie } = await login(ctx, request, role, { username: text(form, "username"), password: text(form, "password"), code: text(form, "code") });
-      return redirect(destination(url), [cookie]);
+      const { cookie, twoStepOwed } = await login(ctx, request, role, { username: text(form, "username"), password: text(form, "password"), code: text(form, "code") });
+      return redirect(twoStepOwed ? `/${role}/account` : destination(url), [cookie]);
     });
 
     route("POST", `/${role}/logout`, async (request) => redirect(path, [await logout(ctx, request, role)]));
@@ -164,34 +168,39 @@ ${role === "admin" ? field("code", "Verification code", html`<input type="text" 
     // One's own password ------------------------------------------------------
 
     route("GET", `/${role}/account`, async (request, url) => {
-      const session = await enter(request, role, (user) => (role === "admin" ? [twoStepQuery(user)] : []));
-      const body = html`<form method="post">${card(html`
+      const session = await enter(request, role, (user) => [twoStepQuery(role, user)], true);
+      const password = html`<form method="post">${card(html`
 ${field("current", "Current password", html`<input type="password" id="current" name="current_password" autocomplete="current-password" required>`)}
 ${field("new", "New password", html`<input type="password" id="new" name="new_password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`, PASSWORD_HINT)}
 ${field("confirm", "Repeat the new password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`)}`,
         { title: "Change your password", description: "You stay signed in here. Every other place where you are signed in is signed out.", class: "narrow",
-          footer: html`<button class="btn btn-primary">Change password</button>` })}</form>
-${role === "admin" ? twoStepCard(session, await twoStep(ctx, session, session.rows[0]), (await loadLabel(ctx.sites)).name) : ""}`;
+          footer: html`<button class="btn btn-primary">Change password</button>` })}</form>`;
+      const twoStepPart = twoStepCard(session, await twoStep(ctx, session, session.rows[0]), (await loadLabel(ctx.sites)).name);
+      // A reader who owes the setup sees it first: nothing else opens until it is done.
+      const body = session.twoStepOwed
+        ? html`<div class="narrow">${alert("warn", html`<strong>Set up two-step verification to continue.</strong> The administrators of this site require it of every reader. Until you do, this is the only page that opens.`)}</div>
+${twoStepPart}<br>${password}`
+        : html`${password}<br>${twoStepPart}`;
       return show({
         title: "Your account", subtitle: `Signed in as ${session.user.username}.`, body, role, username: session.user.username, active: `/${role}/account`, url,
       });
     });
 
     route("POST", `/${role}/account`, async (request) => {
-      const session = await enter(request, role);
+      const session = await enter(request, role, undefined, true);
       const form = await request.formData();
       const action = text(form, "action");
-      if (role === "admin" && action === "two-step-start") {
+      if (action === "two-step-start") {
         await startTwoStep(ctx, session, { current_password: text(form, "current_password") });
-        return done("/admin/account", "Almost there: add the key to your authenticator app and confirm with a code.");
+        return done(`/${role}/account`, "Almost there: add the key to your authenticator app and confirm with a code.");
       }
-      if (role === "admin" && action === "two-step-confirm") {
+      if (action === "two-step-confirm") {
         await confirmTwoStep(ctx, session, { code: text(form, "code") });
-        return done("/admin/account", "Two-step verification is on. Your other sessions were signed out.");
+        return done(`/${role}/account`, "Two-step verification is on. Your other sessions were signed out.");
       }
-      if (role === "admin" && action === "two-step-disable") {
+      if (action === "two-step-disable") {
         await disableTwoStep(ctx, session, { current_password: text(form, "current_password") });
-        return done("/admin/account", "Two-step verification is off.");
+        return done(`/${role}/account`, "Two-step verification is off.");
       }
       if (text(form, "new_password") !== text(form, "confirm")) throw new HttpError(400, "The two new passwords are not the same.");
       await changeOwnPassword(ctx, session, { current_password: text(form, "current_password"), new_password: text(form, "new_password") });
@@ -202,17 +211,24 @@ ${role === "admin" ? twoStepCard(session, await twoStep(ctx, session, session.ro
   /** Two-step verification on Your account: off (turn it on), being set up (the key and the code), or on (turn it off). */
   const twoStepCard = (session: Session, state: TwoStep, issuer: string): Safe => {
     const title = "Two-step verification";
+    const reader = session.role === "reader";
+    const description = state.required ? "Required of every reader by the administrators of this site." : "Optional, and yours to decide: it only applies to your account.";
     const currentPassword = field("two-step-password", "Current password",
       html`<input type="password" id="two-step-password" name="current_password" autocomplete="current-password" required>`);
     if (state.enabled) {
-      return html`<br><form method="post" data-confirm="Turn off two-step verification? You will sign in with your password alone.">
+      return html`<form method="post" data-confirm="${state.required
+        ? "Turn off two-step verification? It is required: you will have to set it up again right away, before anything else opens."
+        : "Turn off two-step verification? You will sign in with your password alone."}">
 <input type="hidden" name="action" value="two-step-disable">${card(html`<p>${badge("On", "ok")} Since ${date(state.enabled_at ?? 0)} UTC. Signing in asks for your password and a code from your authenticator app.</p>
-<div class="field">${alert("info", html`Lost the phone? Whoever holds the root password can turn this off for you at <code>/root/setup</code>.`)}</div>
-${currentPassword}`, { title, description: "Optional, and yours to decide: it only applies to your account.", class: "narrow",
+<div class="field">${alert("info", reader
+        ? "Lost the phone? Ask an administrator of this site to turn this off for you."
+        : html`Lost the phone? Whoever holds the root password can turn this off for you at <code>/root/setup</code>.`)}</div>
+${state.required ? html`<p class="muted">Moving to another phone? Turn it off here and set it up again on the new one.</p>` : ""}
+${currentPassword}`, { title, description, class: "narrow",
         footer: html`<button class="btn btn-danger">Turn off</button>` })}</form>`;
     }
     if (state.pending && state.secret) {
-      return html`<br>${card(html`<p><strong>1.</strong> In your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…), add an account and choose to <strong>enter a setup key</strong>. Type or paste this key, with the type <em>time-based</em>:</p>
+      return card(html`<p><strong>1.</strong> In your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, 1Password…), add an account and choose to <strong>enter a setup key</strong>. Type or paste this key, with the type <em>time-based</em>:</p>
 <div class="secret"><code id="two-step-key">${state.secret}</code><button type="button" class="btn btn-sm" data-copy="#two-step-key">Copy</button></div>
 <p class="muted">On the device that has the app? <a href="${mfaUrl(issuer, session.user.username, state.secret)}">Open it in the authenticator app</a>.</p>
 <p><strong>2.</strong> Type the 6-digit code the app shows now. Nothing changes at sign-in until you do.</p>
@@ -221,11 +237,11 @@ ${field("two-step-code", "Code from the app", html`<input type="text" id="two-st
 <div class="actions"><button class="btn btn-primary">Turn on</button></div></form>
 <div class="field">${alert("warn", "This key is the second step itself: whoever has it can make your codes. Do not share it or keep it in a note.")}</div>`,
         { title: `${title}: finish the setup`, class: "narrow",
-          footer: html`<form method="post"><input type="hidden" name="action" value="two-step-disable"><button class="btn">Cancel setup</button></form>` })}`;
+          footer: html`<form method="post"><input type="hidden" name="action" value="two-step-disable"><button class="btn">${state.required ? "Start over" : "Cancel setup"}</button></form>` });
     }
-    return html`<br><form method="post"><input type="hidden" name="action" value="two-step-start">${card(html`<p>${badge("Off")} Signing in asks only for your password.</p>
+    return html`<form method="post"><input type="hidden" name="action" value="two-step-start">${card(html`<p>${badge("Off", state.required ? "warn" : undefined)} Signing in asks only for your password.</p>
 <p class="muted">With it on, signing in also asks for a 6-digit code from an authenticator app on your phone, so a stolen password is not enough. API keys keep working as they do.</p>
-${currentPassword}`, { title, description: "Optional, and yours to decide: it only applies to your account.", class: "narrow",
+${currentPassword}`, { title, description, class: "narrow",
       footer: html`<button class="btn btn-primary">Set up</button>` })}</form>`;
   };
 
@@ -480,7 +496,7 @@ ${card(html`<div class="split"><div><strong>Remove this source</strong><p class=
     const editPath = (id: string): string => `/admin/edit-${role}?${idParam}=${encodeURIComponent(id)}`;
 
     route("GET", listPath, async (request, url) => {
-      const session = await enter(request, "admin", () => [listAccountsQuery(role, url.searchParams), ...(role === "reader" ? [SOURCE_ALIASES] : [])]);
+      const session = await enter(request, "admin", () => [listAccountsQuery(role, url.searchParams), ...(role === "reader" ? [SOURCE_ALIASES, READER_SETTINGS] : [])]);
       const list = accountsPage(session.rows[0] ?? [], url.searchParams);
       const value = (name: string): string => url.searchParams.get(name) ?? "";
       const filtered = ["q", "source", "created_from", "created_to"].some((name) => value(name) !== "");
@@ -505,12 +521,36 @@ ${role === "admin" && account.id === session.user.id ? html` ${badge("You")}` : 
 ${role === "reader" ? html`<td>${account.email ?? html`<span class="muted">None</span>`}</td><td class="num">${account.sources}</td>` : ""}<td>${date(account.created_at)}</td>
 <td class="end"><a class="btn btn-sm" href="${editPath(account.id)}">Manage</a></td></tr>`)}</tbody></table></div>`}
 ${pager(url, list.page, list.hasNext)}`, { flush: true });
+      const settings = readerSettings(session.rows[2]);
+      const missing = settings.readers_without_two_step;
+      const requirement = role !== "reader" ? "" : html`<br>${card(html`<div class="split"><div>${settings.two_step_required
+        ? html`<strong>Two-step verification is required of every reader</strong> ${badge("Required", "ok")}
+<p class="muted">A reader who has not set it up is sent to do so right after signing in, and can open nothing until it is done. ${missing === 0
+          ? "Every reader has set it up."
+          : `${plural(missing, "reader has", "readers have")} not set it up yet.`}</p>`
+        : html`<strong>Require two-step verification of every reader</strong> ${badge("Optional")}
+<p class="muted">Today each reader decides. With this on, signing in is not enough: a reader has to set up an authenticator app before opening anything, and the API keys of a reader who has not stop working until they do.
+${missing === 0 ? "Every reader has already set it up." : `${plural(missing, "reader has", "readers have")} not set it up yet.`}</p>`}</div>
+<form method="post" data-confirm="${settings.two_step_required
+        ? "Stop requiring two-step verification? Readers who have it on keep it; the others sign in with the password alone."
+        : "Require two-step verification of every reader? Those who have not set it up are stopped at once until they do."}">
+<input type="hidden" name="action" value="${settings.two_step_required ? "two-step-optional" : "two-step-required"}"><button class="btn">${settings.two_step_required ? "Stop requiring" : "Require"}</button></form></div>`,
+        { title: "Two-step verification" })}`;
       return adminPage(session, url, {
-        title, body, active: listPath,
+        title, body: html`${body}${requirement}`, active: listPath,
         subtitle: role === "reader" ? "Accounts that sign in to read sources." : "Accounts that manage sources, readers and other administrators.",
         actions: html`<a class="btn btn-primary" href="/admin/create-${role}">${icon("plus")}Add ${noun}</a>`,
       });
     });
+
+    if (role === "reader") {
+      route("POST", listPath, async (request) => {
+        const { actor } = await enter(request, "admin");
+        const required = text(await request.formData(), "action") === "two-step-required";
+        await setReaderSettings(ctx, actor, { two_step_required: required });
+        return done(listPath, required ? "Two-step verification is now required of every reader." : "Two-step verification is optional for readers again.");
+      });
+    }
 
     route("GET", `/admin/create-${role}`, async (request, url) => {
       const session = await enter(request, "admin");
@@ -574,6 +614,10 @@ ${account.api_keys.map((key) => html`<tr><td>${key.name ?? html`<span class="mut
 <div class="actions">${link(account.invite ? "Generate a new link" : account.pending ? "Generate access link" : "Generate password link")}
 ${account.invite ? html`<form method="post" data-confirm="Revoke the link? It stops working at once."><input type="hidden" name="action" value="revoke-invite"><button class="btn btn-danger">Revoke link</button></form>` : ""}</div></div>`,
         { title: "Access link", description: "The reader opens it once and chooses their own password. You never see the password.", class: "narrow" });
+      const twoStepReset = role !== "reader" || !account.two_step ? "" : card(html`<div class="split"><div><strong>${account.username} uses two-step verification</strong> ${badge("Two-step", "ok")}
+<p class="muted">Lost phone? Turn it off here and the password alone signs in again. If it is required of every reader, they set it up again at the next sign-in.</p></div>
+<form method="post" data-confirm="Turn off the two-step verification of ${account.username}? Do it only if you are sure the request comes from them.">
+<input type="hidden" name="action" value="reset-two-step"><button class="btn">Turn off</button></form></div>`, { title: "Two-step verification", class: "narrow" });
       const body = html`<form method="post"><input type="hidden" name="action" value="save">
 ${card(html`${field("username", "Username", html`<input type="text" id="username" name="username" value="${account.username}" autocomplete="off" required>`)}
 ${role === "reader"
@@ -582,7 +626,7 @@ ${role === "reader"
       ? html`To change your password, go to <a href="/admin/account">Your account</a>.`
       : "Each administrator changes their own password, under Your account. If it is lost, whoever holds the root password sets a new one at /root/setup."}</p>`}`, { title: "Account", class: "narrow" })}
 ${sources}<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
-<br>${access}${keys}
+<br>${access}${keys}${twoStepReset}
 ${card(html`<div class="split"><div>${account.suspended
         ? html`<strong>This ${noun} is suspended</strong> ${badge("Suspended", "danger")}<p class="muted">They cannot sign in or use their API keys${role === "reader" ? " or an access link" : ""}. Everything they have is kept.</p>`
         : html`<strong>Suspend this ${noun}</strong><p class="muted">Signs them out and keeps them out, without removing anything: reactivating gives it all back.${self ? " This is your own account: you will be signed out." : ""}</p>`}</div>
@@ -620,6 +664,10 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
       if (action === "invite" && role === "reader") {
         const invite = await createInvite(ctx, session.actor, id);
         return linkPage(session, request, url, { id, ...invite }, invite, false);
+      }
+      if (action === "reset-two-step" && role === "reader") {
+        await resetTwoStep(ctx, session.actor, "reader", id);
+        return done(editPath(id), "Two-step verification turned off for this reader.");
       }
       if (action === "revoke-invite" && role === "reader") {
         await revokeInvite(ctx, session.actor, id);
@@ -698,15 +746,17 @@ ${older}`, { flush: true });
 ${field("username", "Username", html`<input type="text" id="username" name="username" value="${invite.username}" autocomplete="username" readonly>`, "You will sign in with this name.")}
 ${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="${PASSWORD_MIN}" required autofocus>`, PASSWORD_HINT)}
 ${field("confirm", "Repeat the password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="${PASSWORD_MIN}" required>`)}
-<div class="field"><button class="btn btn-primary btn-block">Create password and sign in</button></div></form>`;
+<div class="field"><button class="btn btn-primary btn-block">${invite.two_step ? "Create password" : "Create password and sign in"}</button></div></form>`;
     return show({ title: "Create your password", subtitle: `This link works once and expires on ${date(invite.expires_at)} UTC.`, body, url });
   });
 
   route("POST", "/reader/invite/:token", async (request, _url, params) => {
     const form = await request.formData();
     if (text(form, "password") !== text(form, "confirm")) throw new HttpError(400, "The two passwords are not the same.");
-    const { cookie } = await acceptInvite(ctx, request, params.token ?? "", { password: text(form, "password") });
-    return redirect("/reader/home", [cookie]);
+    const { cookie, twoStepOwed } = await acceptInvite(ctx, request, params.token ?? "", { password: text(form, "password") });
+    // With two-step verification on, the link does not sign in: the new password and a code do.
+    if (cookie === null) return done("/reader/", "Password created. Sign in with it and the code from your authenticator app.");
+    return redirect(twoStepOwed ? "/reader/account" : "/reader/home", [cookie]);
   });
 
   // -------------------------------------------------------------------------

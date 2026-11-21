@@ -4,6 +4,7 @@ import { ROOT, helpers, secrets } from "./test-helpers.ts";
 
 // Two-step verification: optional, turned on by each administrator for their
 // own account, and asked for at sign-in only from those who turned it on.
+// The readers' side, and making it required of them, is in reader-two-step.test.ts.
 export default function ({ test, assert }: Tests) {
   const { json, cookieOf, createAdmin, audit } = helpers(assert);
   const root = { "x-root-password": ROOT };
@@ -114,10 +115,10 @@ export default function ({ test, assert }: Tests) {
     assert.equal(off.map((row) => [row.actor.role, row.target?.name, row.details]), [["admin", "ana", {}], ["root", "ana", {}], ["admin", "ana", { setup: "cancelled" }]]);
   });
 
-  test("two-step: the pages offer it on Your account and ask for the code at the administrator sign-in only", { secrets }, async (app) => {
+  test("two-step: the pages offer it on Your account and ask for the code at both sign-ins", { secrets }, async (app) => {
     const ana = await createAdmin(app);
     assert((await (await app.fetch("/admin/")).text()).includes('name="code"'));
-    assert(!(await (await app.fetch("/reader/")).text()).includes('name="code"'));
+    assert((await (await app.fetch("/reader/")).text()).includes('name="code"'));
     assert((await (await app.fetch("/admin/account", { headers: { cookie: ana } })).text()).includes("Two-step verification"));
     const form = (fields: Record<string, string>) => app.fetch("/admin/account", {
       method: "POST", headers: { cookie: ana, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString(),

@@ -5,9 +5,16 @@
 //   /api/root/*     root password in the X-Root-Password header
 //   /api/reader/invite/:token   no sign-in: the access link is the credential
 //
-// An administrator who turned on two-step verification signs in with
-// `username`, `password` and `code` (the 6 digits of their authenticator app,
-// as text). API keys are not affected: a key is its own credential.
+// Whoever turned on two-step verification signs in with `username`,
+// `password` and `code` (the 6 digits of their authenticator app, as text).
+// The API keys of an account that has it on are not affected: a key is its
+// own credential.
+//
+// Administrators can require two-step verification of every reader (PUT
+// /api/admin/reader-settings). A reader who has not set it up then gets 403
+// from every /api/reader/* route, by cookie and by key, except `me`, `logout`
+// and the /api/reader/two-step routes, where they set it up. Their sign-in
+// answers `two_step_setup_required: true`.
 //
 // The key goes in the `Authorization: Bearer <key>` header. Without valid
 // authentication the answer is 401; the API never redirects to the login.
@@ -21,6 +28,7 @@ import {
   apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, createSource, deleteAccount, deleteApiKey, deleteFile, deleteSource, fileTargetQuery, filePath, filesPage, findInvite, listFilesQuery, putFile, readFile,
   identify, inviteUrl, ipOf, listAccountsQuery, POLICY, auditCsv, changeOwnPassword, exportAuditQueries, policy, setPolicy, setSuspended, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
   readableSourcesQuery, requireRoot, revokeInvite, confirmTwoStep, disableTwoStep, resetTwoStep, startTwoStep, twoStep, twoStepQuery, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, updateAccount, updateSource,
+  READER_SETTINGS, readerSettings, setReaderSettings,
 } from "./core.ts";
 import { rootActor } from "./audit.ts";
 import { loadLabel } from "./label.ts";
@@ -77,8 +85,8 @@ export function registerApi(server: Server, ctx: Ctx): void {
   };
 
   /** Requires the cookie or the key of the role. The reads share the same trip to the database. */
-  const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const { session } = await identify(ctx, request, role, { allowKey: true, reads });
+  const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[], duringSetup = false): Promise<Session> => {
+    const { session } = await identify(ctx, request, role, { allowKey: true, reads, duringSetup });
     if (!session) throw new HttpError(401, "Not authenticated.");
     return session;
   };
@@ -88,15 +96,15 @@ export function registerApi(server: Server, ctx: Ctx): void {
   for (const role of ["admin", "reader"] as const) {
     route("POST", `/api/${role}/login`, async (request) => {
       const result = await login(ctx, request, role, await body(request));
-      return Response.json({ user: result.user }, { headers: { ...NO_STORE, "set-cookie": result.cookie } });
+      return Response.json({ user: result.user, ...(result.twoStepOwed ? { two_step_setup_required: true } : {}) }, { headers: { ...NO_STORE, "set-cookie": result.cookie } });
     });
 
     route("POST", `/api/${role}/logout`, async (request) =>
       Response.json({ ok: true }, { headers: { ...NO_STORE, "set-cookie": await logout(ctx, request, role) } }));
 
     route("GET", `/api/${role}/me`, async (request) => {
-      const { user } = await enter(request, role);
-      return role === "reader" ? user : { id: user.id, username: user.username };
+      const { user, twoStepOwed } = await enter(request, role, undefined, true);
+      return role === "reader" ? { ...user, ...(twoStepOwed ? { two_step_setup_required: true } : {}) } : { id: user.id, username: user.username };
     });
 
     route("GET", `/api/${role}/api-keys`, async (request) => {
@@ -114,7 +122,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
     // One's own password: `current_password` and `new_password`. With the session cookie only, never with a key.
     // The other sessions of the account end.
     route("PUT", `/api/${role}/password`, async (request) => {
-      await changeOwnPassword(ctx, await enter(request, role), await body(request));
+      await changeOwnPassword(ctx, await enter(request, role, undefined, true), await body(request));
       return { ok: true };
     });
 
@@ -123,34 +131,47 @@ export function registerApi(server: Server, ctx: Ctx): void {
       await deleteApiKey(ctx, session.actor, role, session.user.id, params.id ?? "");
       return { ok: true };
     });
+
+    // Two-step verification of one's own account. With the session cookie only, never with a key. Turning it on
+    // takes two calls: `setup` (`current_password`) answers with the key for the authenticator app, and `confirm`
+    // (`code`) proves the app has it. For a reader, `required` says whether the administrators demand it.
+    route("GET", `/api/${role}/two-step`, async (request) => {
+      const session = await enter(request, role, (user) => [twoStepQuery(role, user)], true);
+      const { enabled, enabled_at, pending, required } = await twoStep(ctx, session, session.rows[0]);
+      return { enabled, enabled_at, pending, ...(role === "reader" ? { required } : {}) };
+    });
+
+    // The answer carries `secret`, the key to type into the app, and `url`, the same as an otpauth:// address.
+    route("POST", `/api/${role}/two-step/setup`, async (request) => {
+      const session = await enter(request, role, undefined, true);
+      const { secret } = await startTwoStep(ctx, session, await body(request));
+      return { secret, url: mfaUrl((await loadLabel(ctx.sites)).name, session.user.username, secret) };
+    });
+
+    route("POST", `/api/${role}/two-step/confirm`, async (request) => {
+      await confirmTwoStep(ctx, await enter(request, role, undefined, true), await body(request));
+      return { ok: true };
+    });
+
+    // `current_password` when it is on; nothing when it is only a setup never confirmed.
+    route("POST", `/api/${role}/two-step/disable`, async (request) => {
+      await disableTwoStep(ctx, await enter(request, role, undefined, true), await optionalBody(request));
+      return { ok: true };
+    });
   }
 
   // Administrator ------------------------------------------------------------
 
-  // Two-step verification of one's own account, which each administrator turns on or leaves off. With the
-  // session cookie only, never with a key. Turning it on takes two calls: `setup` (`current_password`) answers
-  // with the key for the authenticator app, and `confirm` (`code`) proves the app has it.
-  route("GET", "/api/admin/two-step", async (request) => {
-    const session = await enter(request, "admin", (user) => [twoStepQuery(user)]);
-    const { enabled, enabled_at, pending } = await twoStep(ctx, session, session.rows[0]);
-    return { enabled, enabled_at, pending };
+  // What is decided about every reader. `two_step_required`: each reader must set up two-step verification,
+  // and one who has not can do nothing else. `readers_without_two_step` (read only) is how many have not.
+  route("GET", "/api/admin/reader-settings", async (request) => {
+    const session = await enter(request, "admin", () => [READER_SETTINGS]);
+    return readerSettings(session.rows[0]);
   });
 
-  // The answer carries `secret`, the key to type into the app, and `url`, the same as an otpauth:// address.
-  route("POST", "/api/admin/two-step/setup", async (request) => {
-    const session = await enter(request, "admin");
-    const { secret } = await startTwoStep(ctx, session, await body(request));
-    return { secret, url: mfaUrl((await loadLabel(ctx.sites)).name, session.user.username, secret) };
-  });
-
-  route("POST", "/api/admin/two-step/confirm", async (request) => {
-    await confirmTwoStep(ctx, await enter(request, "admin"), await body(request));
-    return { ok: true };
-  });
-
-  // `current_password` when it is on; nothing when it is only a setup never confirmed.
-  route("POST", "/api/admin/two-step/disable", async (request) => {
-    await disableTwoStep(ctx, await enter(request, "admin"), await optionalBody(request));
+  route("PUT", "/api/admin/reader-settings", async (request) => {
+    const { actor } = await enter(request, "admin");
+    await setReaderSettings(ctx, actor, await body(request));
     return { ok: true };
   });
 
@@ -309,6 +330,14 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return Response.json(inviteJson(ctx, request, await createInvite(ctx, actor, params.id ?? "")), { status: 201, headers: NO_STORE });
   });
 
+  // For a reader who lost their phone: their two-step verification is turned off. If it is required, they set
+  // it up again the next time they sign in.
+  route("DELETE", "/api/admin/readers/:id/two-step", async (request, _url, params) => {
+    const { actor } = await enter(request, "admin");
+    await resetTwoStep(ctx, actor, "reader", params.id ?? "");
+    return { ok: true };
+  });
+
   route("DELETE", "/api/admin/readers/:id/invite", async (request, _url, params) => {
     const { actor } = await enter(request, "admin");
     await revokeInvite(ctx, actor, params.id ?? "");
@@ -355,7 +384,8 @@ export function registerApi(server: Server, ctx: Ctx): void {
   });
 
   // The access link: who it is for, and choosing the password (`{ "password": "..." }`),
-  // which signs the reader in. The link works once.
+  // which signs the reader in. The link works once. A reader with two-step verification on is not
+  // signed in by it (`signed_in: false`): they sign in with the new password and a code.
   route("GET", "/api/reader/invite/:token", async (request, _url, params) => {
     const { username, expires_at } = await findInvite(ctx, request, params.token ?? "");
     return { username, expires_at };
@@ -363,7 +393,10 @@ export function registerApi(server: Server, ctx: Ctx): void {
 
   route("POST", "/api/reader/invite/:token", async (request, _url, params) => {
     const result = await acceptInvite(ctx, request, params.token ?? "", await body(request));
-    return Response.json({ user: result.user }, { headers: { ...NO_STORE, "set-cookie": result.cookie } });
+    return Response.json(
+      { user: result.user, signed_in: result.cookie !== null, ...(result.twoStepOwed ? { two_step_setup_required: true } : {}) },
+      { headers: { ...NO_STORE, ...(result.cookie === null ? {} : { "set-cookie": result.cookie }) } },
+    );
   });
 
   route("GET", "/api/reader/view/:alias", (request, _url, params) => view(ctx, request, params.alias ?? "", "", "api"));
@@ -403,7 +436,7 @@ export function registerApi(server: Server, ctx: Ctx): void {
   // For an administrator who lost their phone: their two-step verification is turned off, and they sign in with the password alone.
   route("DELETE", "/api/root/admins/:id/two-step", async (request, _url, params) => {
     await requireRoot(ctx, request);
-    await resetTwoStep(ctx, rootActor(ipOf(ctx, request)), params.id ?? "");
+    await resetTwoStep(ctx, rootActor(ipOf(ctx, request)), "admin", params.id ?? "");
     return { ok: true };
   });
 
