@@ -72,8 +72,8 @@ npm run dev
 
 1. At `/root/setup`, type the root password and create an administrator.
 2. Sign in at `/admin/`. Under **Sources**, `example` is already listed: every folder of `sites/sources/` is a source, private until you decide otherwise.
-3. Under **Readers**, add a reader and tick `example`.
-4. Sign in as that reader at `/reader/`.
+3. Under **Readers**, add a reader with a username and an email. You get a link: copy it. Then tick `example` on the reader's page.
+4. Open the link as the reader would, choose a password, and you are in the reader's library.
 
 ## Publish without a terminal
 
@@ -181,7 +181,10 @@ HTML files go through a small template engine before delivery:
 ### Good to know
 
 - **Data:** one SQLite database. On your computer and on Linux it is in `.data/`: that folder is your backup.
-- **Sessions** last 7 days. Readers cannot change their own password; an administrator does it.
+- **Sessions** last 7 days.
+- **Readers choose their own password.** Adding a reader gives you a link (`/reader/invite/…`) that works once and expires in 72 hours. Gatefold sends no email: you send the link. For a new password, generate a new link on the reader's page; no administrator ever sees or sets a reader's password.
+- **Usernames** are unique whatever their case: `Ana` and `ana` are the same account.
+- **Audit log:** every change (accounts, permissions, visibility, props, API keys, sign-ins and refused sign-ins) is recorded with who, when and from where, under **Audit log** in the console and at `GET /api/admin/audit`. Entries cannot be edited or removed. They never hold a password, a key or a link.
 - **Root password:** 5 wrong attempts per hour, then it locks until the next hour.
 - **Limits:** props up to 64,000 characters; files over 1 MB are delivered without templating; on Cloudflare, `sites/` holds up to 20,000 files of 25 MB each.
 

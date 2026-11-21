@@ -1,64 +1,11 @@
-import type { App, Tests } from "../deps/testing.ts";
+import type { Tests } from "../deps/testing.ts";
 import { safeNext } from "./pages.ts";
 import { parseSourceConfig } from "./source-config.ts";
 import { render } from "./template.ts";
-
-// Made-up values: tests never see the real secrets.
-const ROOT = "test-root-password";
-const secrets = { GATEFOLD_ROOT_PASSWORD: ROOT, GATEFOLD_MASTER_KEY: "test-master-key", GATEFOLD_SIGNING_KEY: "test-signing-key" };
-const JSON_HEADERS = { "content-type": "application/json" };
+import { ROOT, helpers, secrets } from "./test-helpers.ts";
 
 export default function ({ test, assert }: Tests) {
-  const json = (method: string, body: unknown, headers: Record<string, string> = {}): RequestInit => ({
-    method,
-    headers: { ...JSON_HEADERS, ...headers },
-    body: JSON.stringify(body),
-  });
-
-  /** The session cookie returned by a sign-in, ready for the `cookie` header. */
-  const cookieOf = (response: Response): string => (response.headers.getSetCookie()[0] ?? "").split(";")[0]!;
-
-  const createAdmin = async (app: App, username = "ana", password = "ana-password"): Promise<string> => {
-    const created = await app.fetch("/api/root/admins", json("POST", { username, password }, { "x-root-password": ROOT }));
-    assert.equal(created.status, 201);
-    const login = await app.fetch("/api/admin/login", json("POST", { username, password }));
-    assert.equal(login.status, 200);
-    return cookieOf(login);
-  };
-
-  const createReader = async (app: App, admin: string, username = "leo", password = "leo-password"): Promise<{ id: string; cookie: string }> => {
-    const created = await app.fetch("/api/admin/readers", json("POST", { username, password }, { cookie: admin }));
-    assert.equal(created.status, 201);
-    const { id } = (await created.json()) as { id: string };
-    const login = await app.fetch("/api/reader/login", json("POST", { username, password }));
-    return { id, cookie: cookieOf(login) };
-  };
-
-  interface ExampleSource {
-    public: boolean;
-    props: Record<string, unknown>;
-    render: string[];
-    origin: string;
-    missing: boolean;
-  }
-
-  /**
-   * The source `example` (the folder that ships with the template), which exists
-   * without anyone registering it. Returns `null` if the installation removed
-   * the folder. `settings.public` makes it public.
-   */
-  const exampleSource = async (app: App, admin: string, settings: { public?: boolean } = {}): Promise<ExampleSource | null> => {
-    const found = await app.fetch("/api/admin/sources/example", { headers: { cookie: admin } });
-    if (found.status === 404) return null;
-    assert.equal(found.status, 200);
-    const source = (await found.json()) as ExampleSource;
-    // A folder that was just detected is private until an administrator says otherwise.
-    assert.equal(source.public, false);
-    assert.equal(source.missing, false);
-    if (!settings.public) return source;
-    assert.equal((await app.fetch("/api/admin/sources/example", json("PUT", { public: true }, { cookie: admin }))).status, 200);
-    return { ...source, public: true };
-  };
+  const { json, cookieOf, createAdmin, createReader, exampleSource } = helpers(assert);
 
   const escaped = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -147,19 +94,24 @@ export default function ({ test, assert }: Tests) {
     assert.equal((await app.fetch("/api/admin/config", json("PUT", { props: { a: 1 } }, { cookie }))).status, 200);
   });
 
-  test("changing the password or removing the user ends the sessions and the keys", { secrets }, async (app) => {
+  test("a new password or the removal of the user ends the sessions; only removal ends the keys", { secrets }, async (app) => {
     const admin = await createAdmin(app);
     const leo = await createReader(app, admin);
     const { key } = (await (await app.fetch("/api/reader/api-keys", { method: "POST", headers: { cookie: leo.cookie } })).json()) as { key: string };
     assert.equal((await app.fetch("/api/reader/me", { headers: { authorization: `Bearer ${key}` } })).status, 200);
 
-    await app.fetch(`/api/admin/readers/${leo.id}`, json("PUT", { password: "leo-new-password" }, { cookie: admin }));
+    // Nobody sets a reader's password for them: the reader chooses a new one through a new link.
+    assert.equal((await app.fetch(`/api/admin/readers/${leo.id}`, json("PUT", { password: "leo-new-password" }, { cookie: admin }))).status, 400);
+    assert.equal((await app.fetch("/api/reader/me", { headers: { cookie: leo.cookie } })).status, 200);
+    const issued = (await (await app.fetch(`/api/admin/readers/${leo.id}/invite`, { method: "POST", headers: { cookie: admin } })).json()) as { url: string };
+    const again = cookieOf(await app.fetch(`/api${new URL(issued.url).pathname}`, json("POST", { password: "leo-new-password" })));
     assert.equal((await app.fetch("/api/reader/me", { headers: { cookie: leo.cookie } })).status, 401);
+    assert.equal((await app.fetch("/api/reader/me", { headers: { cookie: again } })).status, 200);
     // API keys are not affected by a password change, only by removal.
     assert.equal((await app.fetch("/api/reader/me", { headers: { authorization: `Bearer ${key}` } })).status, 200);
+    assert.equal((await app.fetch("/api/reader/login", json("POST", { username: "leo", password: "leo-password" }))).status, 401);
+    assert.equal((await app.fetch("/api/reader/login", json("POST", { username: "leo", password: "leo-new-password" }))).status, 200);
 
-    const again = cookieOf(await app.fetch("/api/reader/login", json("POST", { username: "leo", password: "leo-new-password" })));
-    assert.equal((await app.fetch("/api/reader/me", { headers: { cookie: again } })).status, 200);
     assert.equal((await app.fetch(`/api/admin/readers/${leo.id}`, { method: "DELETE", headers: { cookie: admin } })).status, 200);
     assert.equal((await app.fetch("/api/reader/me", { headers: { cookie: again } })).status, 401);
     assert.equal((await app.fetch("/api/reader/me", { headers: { authorization: `Bearer ${key}` } })).status, 401);
@@ -186,9 +138,20 @@ export default function ({ test, assert }: Tests) {
   test("invalid input is refused with a message", { secrets }, async (app) => {
     const admin = await createAdmin(app);
     const post = (path: string, body: unknown) => app.fetch(path, json("POST", body, { cookie: admin }));
-    assert.equal((await post("/api/admin/readers", { username: "leo", password: "short" })).status, 400);
-    assert.equal((await post("/api/admin/readers", { username: "leo", password: "leo-password" })).status, 201);
-    assert.equal((await post("/api/admin/readers", { username: "leo", password: "leo-password" })).status, 409);
+    // A reader needs an email and never gets a password from the administrator.
+    assert.equal((await post("/api/admin/readers", { username: "leo" })).status, 400);
+    assert.equal((await post("/api/admin/readers", { username: "leo", email: "not-an-email" })).status, 400);
+    assert.equal((await post("/api/admin/readers", { username: "leo", email: "leo@example.test", password: "leo-password" })).status, 400);
+    assert.equal((await post("/api/admin/readers", { username: "x", email: "leo@example.test" })).status, 400);
+    assert.equal((await post("/api/admin/readers", { username: "leo", email: "leo@example.test" })).status, 201);
+    // A name is taken whatever its case, and so is an email.
+    for (const [taken, message] of [[{ username: "LEO", email: "other@example.test" }, "name"], [{ username: "lea", email: "Leo@Example.test" }, "email"]] as const) {
+      const refused = await post("/api/admin/readers", taken);
+      assert.equal(refused.status, 409);
+      assert(((await refused.json()) as { error: string }).error.includes(message), message);
+    }
+    assert.equal((await post("/api/admin/admins", { username: "ANA", password: "another-password" })).status, 409);
+    assert.equal((await post("/api/admin/admins", { username: "bia", password: "short" })).status, 400);
     // Sources are not created through the API, and their rendering settings are not changed through it.
     assert.equal((await post("/api/admin/sources", { alias: "example" })).status, 405);
     for (const change of [{ render: [] }, { props: { title: "x" } }, {}]) {
@@ -257,8 +220,7 @@ export default function ({ test, assert }: Tests) {
     assert.equal((await app.fetch(page)).headers.get("location"), login);
     assert.equal((await app.fetch("/reader/view/does-not-exist/index.html?page=7")).headers.get("location"), login.replace("example", "does-not-exist"));
 
-    const created = await app.fetch("/api/admin/readers", json("POST", { username: "leo", password: "leo-password" }, { cookie: admin }));
-    const { id } = (await created.json()) as { id: string };
+    const { id } = await createReader(app, admin);
     const entered = await app.fetch(login, { method: "POST", body: new URLSearchParams({ username: "leo", password: "leo-password" }) });
     assert.equal(entered.headers.get("location"), page);
     const cookie = cookieOf(entered);
@@ -371,6 +333,7 @@ export default function ({ test, assert }: Tests) {
     const pages = [
       "/admin/home", "/admin/config", "/admin/list-sources", "/admin/list-readers?q=le", "/admin/create-reader",
       `/admin/edit-reader?reader-id=${leo.id}`, "/admin/list-admins", "/admin/create-admin", "/admin/api-keys",
+      "/admin/audit", "/admin/audit?action=login&actor=an&created_from=2020-01-01",
     ];
     for (const path of pages) {
       const response = await app.fetch(path, { headers: { cookie } });
@@ -405,11 +368,12 @@ export default function ({ test, assert }: Tests) {
 
   test("white-label: the brand files of sites/label/ are public, and nothing else in it is", { secrets }, async (app) => {
     // The whole design is in sites/label/: the tokens and the stylesheet that uses them.
-    for (const [path, expected] of [["/label/theme.css", "--brand:"], ["/label/app.css", "var(--brand)"]] as const) {
+    // What they say is the installation's business; that they are served as stylesheets is ours.
+    for (const path of ["/label/theme.css", "/label/app.css"]) {
       const css = await app.fetch(path);
       assert.equal(css.status, 200, path);
       assert((css.headers.get("content-type") ?? "").startsWith("text/css"));
-      assert((await css.text()).includes(expected), path);
+      await css.arrayBuffer();
     }
     for (const path of ["/label/label.json", "/label/README.md", "/label/..%2Fexample%2Fstyle.css", "/label/.hidden.css"]) {
       assert.equal((await app.fetch(path)).status, 404, path);

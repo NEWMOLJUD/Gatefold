@@ -81,6 +81,15 @@ export async function hashApiKey(masterKey: string, key: string): Promise<string
   return base64url(await hmac(masterKey, `api-key:${key}`));
 }
 
+/** The token of a reader's access link (`/reader/invite/<token>`). As long and random as an API key. */
+export function newInviteToken(): string {
+  return randomId(32);
+}
+
+export async function hashInvite(masterKey: string, token: string): Promise<string> {
+  return base64url(await hmac(masterKey, `invite:${token}`));
+}
+
 // ---------------------------------------------------------------------------
 // Session token (JWT, HS256)
 // ---------------------------------------------------------------------------

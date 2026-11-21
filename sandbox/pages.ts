@@ -2,12 +2,13 @@
 // same operation of `core.ts` that the API calls.
 import type { Server } from "../deps/server.ts";
 import {
-  type Ctx, HttpError, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, accountQueries, accountsPage,
-  apiKeys, apiKeysQuery, createAccount, createApiKey, deleteAccount, deleteApiKey, deleteSource,
-  identify, listAccountsQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
-  readableSourcesQuery, redirect, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
+  ACCOUNT_ROWS, type Ctx, HttpError, type Invite, PLATFORM_PROPS, Reply, SOURCE_ALIASES, type Session, type Source, type Statement, type UserRef, acceptInvite, accountQueries,
+  accountsPage, apiKeys, apiKeysQuery, auditPage, createAccount, createApiKey, createInvite, deleteAccount, deleteApiKey, deleteSource, findInvite,
+  identify, inviteUrl, listAccountsQuery, listAuditQuery, listSourcesQuery, login, logout, oneAccount, oneSource, platformProps, readableSources,
+  readableSourcesQuery, redirect, revokeInvite, setPlatformProps, setReaderProps, sourceQuery, sourcesPage, syncSources, updateAccount, updateSource,
 } from "./core.ts";
-import { JS_PATH, type PageOptions, type Safe, alert, asset, badge, card, date, empty, field, html, icon, page, pager } from "./html.ts";
+import { ACTIONS, type AuditEntry } from "./audit.ts";
+import { JS_PATH, type PageOptions, Safe, alert, asset, badge, card, date, empty, field, html, icon, page, pager } from "./html.ts";
 import { labelFile, loadLabel } from "./label.ts";
 import { ROOT_SCRIPT } from "./root.ts";
 import { type Role, sameOrigin } from "./security.ts";
@@ -24,7 +25,7 @@ export function safeNext(next: string | null): string | null {
 
 const LOGIN: Record<Role, { path: string; home: string; subtitle: string }> = {
   admin: { path: "/admin/", home: "/admin/home", subtitle: "Administration console. Use your administrator account." },
-  reader: { path: "/reader/", home: "/reader/home", subtitle: "Use the account your administrator gave you." },
+  reader: { path: "/reader/", home: "/reader/home", subtitle: "Use your username and the password you created through your access link." },
 };
 
 /** Numbers of the overview page, in one statement. */
@@ -89,7 +90,7 @@ export function registerPages(server: Server, ctx: Ctx): void {
    * sites/sources/ get their rows before anything is read.
    */
   const enter = async (request: Request, role: Role, reads?: (user: UserRef) => Statement[]): Promise<Session> => {
-    const sync = role === "admin" ? [syncSources(ctx)] : [];
+    const sync = role === "admin" ? syncSources(ctx) : [];
     const { session } = await identify(ctx, request, role, { allowKey: false, reads: (user) => [...sync, ...(reads?.(user) ?? [])] });
     if (!session) throw new Reply(redirect(LOGIN[role].path));
     return { ...session, rows: session.rows.slice(sync.length) };
@@ -127,7 +128,7 @@ ${field("password", "Password", html`<input type="password" id="password" name="
     route("POST", path, async (request, url) => {
       if (!sameOrigin(request)) throw new HttpError(403, "Request refused: it did not come from this site.");
       const form = await request.formData();
-      const { cookie } = await login(ctx, role, { username: text(form, "username"), password: text(form, "password") });
+      const { cookie } = await login(ctx, request, role, { username: text(form, "username"), password: text(form, "password") });
       return redirect(destination(url), [cookie]);
     });
 
@@ -142,11 +143,11 @@ ${field("password", "Password", html`<input type="password" id="password" name="
       const session = await enter(request, role);
       const form = await request.formData();
       if (text(form, "action") === "revoke") {
-        await deleteApiKey(ctx, role, session.user.id, text(form, "key"));
+        await deleteApiKey(ctx, session.actor, role, session.user.id, text(form, "key"));
         return done(`/${role}/api-keys`, "Key revoked.");
       }
       // No redirect: the key appears in this response and nowhere else.
-      const created = await createApiKey(ctx, role, session.user.id);
+      const created = await createApiKey(ctx, session.actor, role, session.user.id);
       return keysPage(session, url, created.key);
     });
   }
@@ -196,7 +197,7 @@ ${stat("/admin/list-admins", "Administrators", "shield", Number(counts.admins ??
 </div>
 ${card(html`<div class="links">
 <a href="/admin/list-sources">${icon("folder")}<div><strong>Manage sources</strong><span>Choose who reads each folder of <code>sites/sources/</code>.</span></div></a>
-<a href="/admin/create-reader">${icon("users")}<div><strong>Add a reader</strong><span>Create an account and grant it private sources.</span></div></a>
+<a href="/admin/create-reader">${icon("users")}<div><strong>Add a reader</strong><span>Create an account and send the reader the link to choose a password.</span></div></a>
 <a href="/admin/config">${icon("sliders")}<div><strong>Edit platform props</strong><span>Values available to every template of every source.</span></div></a>
 <a href="/admin/api-keys">${icon("key")}<div><strong>Create an API key</strong><span>Automate everything this console does.</span></div></a>
 </div>`, { title: "Quick actions", flush: true })}`;
@@ -214,8 +215,8 @@ ${card(html`<div class="links">
   });
 
   route("POST", "/admin/config", async (request) => {
-    await enter(request, "admin");
-    await setPlatformProps(ctx, text(await request.formData(), "props"));
+    const { actor } = await enter(request, "admin");
+    await setPlatformProps(ctx, actor, text(await request.formData(), "props"));
     return done("/admin/config", "Platform props saved.");
   });
 
@@ -297,18 +298,32 @@ ${card(html`<div class="split"><div><strong>Remove this source</strong><p class=
   });
 
   route("POST", "/admin/edit-source", async (request, url) => {
-    await enter(request, "admin");
+    const { actor } = await enter(request, "admin");
     const alias = url.searchParams.get("source") ?? "";
     const form = await request.formData();
     if (text(form, "action") === "delete") {
-      await deleteSource(ctx, alias);
+      await deleteSource(ctx, actor, alias);
       return done("/admin/list-sources", "Source removed.");
     }
-    await updateSource(ctx, alias, { public: form.has("public") });
+    await updateSource(ctx, actor, alias, { public: form.has("public") });
     return done(`/admin/edit-source?source=${encodeURIComponent(alias)}`, "Visibility saved.");
   });
 
-  // Readers and administrators: the same screens, plus the sources on the reader.
+  // Readers and administrators: the same screens, plus the sources and the access link on the reader.
+
+  const editReader = (id: string): string => `/admin/edit-reader?reader-id=${encodeURIComponent(id)}`;
+
+  /** The access link, in the response that generates it and nowhere else: only its hash is stored. */
+  const linkPage = (session: Session, request: Request, url: URL, reader: { id: string; username: string; email?: string | null }, invite: Invite, fresh: boolean): Promise<Response> =>
+    adminPage(session, url, {
+      title: fresh ? "Reader added" : "Access link", crumbs: [["Readers", "/admin/list-readers"]], active: "/admin/list-readers",
+      subtitle: `${reader.username} chooses their own password through this link.`,
+      body: card(html`<p>Send this link to <strong>${reader.username}</strong>${reader.email ? html` (${reader.email})` : ""}. This system does not send emails: copy the link and send it yourself.</p>
+<div class="secret"><code id="new-link">${inviteUrl(request, invite.token)}</code><button type="button" class="btn btn-sm" data-copy="#new-link">Copy</button></div>
+<p class="muted">This is the only time the link is shown. It works once and expires on ${date(invite.expires_at)} UTC. If it is lost, generate another on the reader's page.</p>
+<div class="field">${alert("warn", "Whoever opens this link chooses the password of this account. Send it only to the reader, through a channel you trust.")}</div>`,
+        { title: "Copy the access link now", class: "narrow", footer: html`<a class="btn btn-primary" href="${editReader(reader.id)}">${fresh ? "Choose the sources they can open" : "Back to the reader"}</a>` }),
+    });
 
   for (const role of ["reader", "admin"] as const) {
     const many = role === "reader" ? "readers" : "admins";
@@ -336,11 +351,13 @@ ${field("q", "Username starts with", html`<input type="text" id="q" name="q" val
 ${list.items.length === 0
   ? filtered
     ? empty("users", `No ${many === "admins" ? "administrators" : "readers"} match these filters`, "Change or clear the filters to see more.", html`<a class="btn" href="${listPath}">Clear filters</a>`)
-    : empty("users", "No readers yet", "Readers sign in to open the private sources you grant them.", html`<a class="btn btn-primary" href="/admin/create-reader">Add the first reader</a>`)
-  : html`<div class="table-wrap"><table><thead><tr><th>Username</th>${role === "reader" ? html`<th class="num">Private sources</th>` : ""}<th>Created (UTC)</th><th></th></tr></thead><tbody>
+    : role === "reader"
+      ? empty("users", "No readers yet", "Readers sign in to open the private sources you grant them.", html`<a class="btn btn-primary" href="/admin/create-reader">Add the first reader</a>`)
+      : empty("users", "No administrators yet", "Administrators manage sources, readers and each other.")
+  : html`<div class="table-wrap"><table><thead><tr><th>Username</th>${role === "reader" ? html`<th>Email</th><th class="num">Private sources</th>` : ""}<th>Created (UTC)</th><th></th></tr></thead><tbody>
 ${list.items.map((account) => html`<tr><td><strong><a href="${editPath(account.id)}">${account.username}</a></strong>
-${role === "admin" && account.id === session.user.id ? html` ${badge("You")}` : ""}</td>
-${role === "reader" ? html`<td class="num">${account.sources}</td>` : ""}<td>${date(account.created_at)}</td>
+${role === "admin" && account.id === session.user.id ? html` ${badge("You")}` : ""}${account.pending ? html` ${badge("Awaiting password", "warn")}` : ""}</td>
+${role === "reader" ? html`<td>${account.email ?? html`<span class="muted">None</span>`}</td><td class="num">${account.sources}</td>` : ""}<td>${date(account.created_at)}</td>
 <td class="end"><a class="btn btn-sm" href="${editPath(account.id)}">Manage</a></td></tr>`)}</tbody></table></div>`}
 ${pager(url, list.page, list.hasNext)}`, { flush: true });
       return adminPage(session, url, {
@@ -354,21 +371,27 @@ ${pager(url, list.page, list.hasNext)}`, { flush: true });
       const session = await enter(request, "admin");
       const body = html`<form method="post">${card(html`
 ${field("username", "Username", html`<input type="text" id="username" name="username" autocomplete="off" required>`, "3 to 64 characters: letters, digits, dot, hyphen, underscore or @.")}
-${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>`,
-  "At least 8 characters. Share it with the person through a safe channel.")}
-${role === "admin" ? html`<div class="field">${alert("warn", "An administrator can do everything, including removing the other administrators.")}</div>` : ""}`,
+${role === "reader"
+  ? field("email", "Email", html`<input type="email" id="email" name="email" autocomplete="off" maxlength="254" required>`,
+      "Identifies the reader. No message is sent to it: you get a link to send them yourself.")
+  : html`${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>`,
+      "At least 8 characters. Share it with the person through a safe channel.")}
+<div class="field">${alert("warn", "An administrator can do everything, including removing the other administrators.")}</div>`}`,
         { class: "narrow", footer: html`<a class="btn" href="${listPath}">Cancel</a><button class="btn btn-primary">Add ${noun}</button>` })}</form>`;
       return adminPage(session, url, {
         title: `Add ${noun}`, crumbs: [crumb], body, active: listPath,
-        subtitle: role === "reader" ? "You choose the sources this reader can open on the next screen." : undefined,
+        subtitle: role === "reader" ? "Creating the reader gives you a link. The reader opens it and chooses their own password." : undefined,
       });
     });
 
-    route("POST", `/admin/create-${role}`, async (request) => {
-      await enter(request, "admin");
+    route("POST", `/admin/create-${role}`, async (request, url) => {
+      const session = await enter(request, "admin");
       const form = await request.formData();
-      const account = await createAccount(ctx, role, { username: text(form, "username"), password: text(form, "password") });
-      return done(editPath(account.id), role === "reader" ? "Reader added. Choose the sources they can open." : "Administrator added.");
+      const account = await createAccount(ctx, session.actor, role, role === "reader"
+        ? { username: text(form, "username"), email: text(form, "email") }
+        : { username: text(form, "username"), password: text(form, "password") });
+      // No redirect for a reader: the link appears in this response and nowhere else.
+      return account.invite ? linkPage(session, request, url, account, account.invite, true) : done(editPath(account.id), "Administrator added.");
     });
 
     route("GET", `/admin/edit-${role}`, async (request, url) => {
@@ -376,7 +399,7 @@ ${role === "admin" ? html`<div class="field">${alert("warn", "An administrator c
       const session = await enter(request, "admin", () => accountQueries(role, id));
       const account = oneAccount(session.rows);
       const allowed = new Set(account.allowed ?? []);
-      const all = session.rows[3] ?? [];
+      const all = session.rows[ACCOUNT_ROWS.sources] ?? [];
       const sources = role === "reader"
         ? card(all.length === 0
             ? html`<p class="muted">There is no source yet. ${ADD_SOURCE}</p>`
@@ -393,12 +416,27 @@ ${account.api_keys.map((key) => html`<tr><td><code>${key.id}</code></td><td>${da
           { title: "API keys of this reader", class: "narrow", flush: true })
         : "";
       const self = role === "admin" && account.id === session.user.id;
+      const link = (label: string): Safe => html`<form method="post" ${account.invite ? new Safe('data-confirm="Generate a new link? The one issued before stops working."') : ""}>
+<input type="hidden" name="action" value="invite"><button class="btn">${label}</button></form>`;
+      const access = role !== "reader" ? "" : card(html`<div class="split"><div>${account.pending
+        ? html`<strong>${account.username} has not chosen a password yet</strong> ${badge("Awaiting password", "warn")}`
+        : html`<strong>${account.username} has a password</strong> ${badge("Active", "ok")}`}
+<p class="muted">${account.invite
+        ? `A link issued on ${date(account.invite.created_at)} UTC is waiting to be used. It expires on ${date(account.invite.expires_at)} UTC.`
+        : account.pending
+          ? "There is no valid link: nobody can sign in to this account until you generate one and the reader uses it."
+          : "To let the reader choose a new password, generate a link. The current password keeps working until the link is used."}</p></div>
+<div class="actions">${link(account.invite ? "Generate a new link" : account.pending ? "Generate access link" : "Generate password link")}
+${account.invite ? html`<form method="post" data-confirm="Revoke the link? It stops working at once."><input type="hidden" name="action" value="revoke-invite"><button class="btn btn-danger">Revoke link</button></form>` : ""}</div></div>`,
+        { title: "Access link", description: "The reader opens it once and chooses their own password. You never see the password.", class: "narrow" });
       const body = html`<form method="post"><input type="hidden" name="action" value="save">
 ${card(html`${field("username", "Username", html`<input type="text" id="username" name="username" value="${account.username}" autocomplete="off" required>`)}
-${field("password", "New password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8">`,
-  "Leave blank to keep the current one. Changing it signs this user out everywhere.")}`, { title: "Account", class: "narrow" })}
+${role === "reader"
+  ? field("email", "Email", html`<input type="email" id="email" name="email" value="${account.email ?? ""}" autocomplete="off" maxlength="254">`)
+  : field("password", "New password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8">`,
+      "Leave blank to keep the current one. Changing it signs this user out everywhere.")}`, { title: "Account", class: "narrow" })}
 ${sources}<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
-<br>${keys}
+<br>${access}${keys}
 ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
 <p class="muted">Deletes the account, its sessions and its API keys${role === "reader" ? ", and its permissions" : ""}.${self ? " This is your own account: you will be signed out." : ""}</p></div>
 <form method="post" data-confirm="Remove ${account.username}? This cannot be undone.">
@@ -415,22 +453,103 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
       const form = await request.formData();
       const action = text(form, "action");
       if (action === "delete") {
-        await deleteAccount(ctx, role, id);
+        await deleteAccount(ctx, session.actor, role, id);
         // Whoever removes their own account loses the session with it: back to sign-in.
         return role === "admin" && id === session.user.id ? redirect("/admin/") : done(listPath, "Account removed.");
       }
       if (action === "revoke-key" && role === "reader") {
-        await deleteApiKey(ctx, "reader", id, text(form, "key"));
+        await deleteApiKey(ctx, session.actor, "reader", id, text(form, "key"));
         return done(editPath(id), "Key revoked.");
       }
-      await updateAccount(ctx, role, id, {
+      if (action === "invite" && role === "reader") {
+        const invite = await createInvite(ctx, session.actor, id);
+        return linkPage(session, request, url, { id, ...invite }, invite, false);
+      }
+      if (action === "revoke-invite" && role === "reader") {
+        await revokeInvite(ctx, session.actor, id);
+        return done(editPath(id), "Link revoked.");
+      }
+      await updateAccount(ctx, session.actor, role, id, {
         username: text(form, "username"),
-        password: text(form, "password"),
-        ...(role === "reader" ? { sources: form.getAll("sources").filter((item) => typeof item === "string") } : {}),
+        ...(role === "reader"
+          ? { email: text(form, "email"), sources: form.getAll("sources").filter((item) => typeof item === "string") }
+          : { password: text(form, "password") }),
       });
       return done(editPath(id), "Changes saved.");
     });
   }
+
+  // Audit log ---------------------------------------------------------------
+
+  const auditDetails = (entry: AuditEntry): Safe => {
+    const parts = Object.entries(entry.details).map(([key, value]) =>
+      `${key}: ${key.endsWith("_at") && typeof value === "number" ? `${date(value)} UTC` : typeof value === "string" ? value : JSON.stringify(value)}`);
+    return parts.length === 0 ? html`` : html`<code>${parts.join(" · ")}</code>`;
+  };
+
+  route("GET", "/admin/audit", async (request, url) => {
+    const session = await enter(request, "admin", () => [listAuditQuery(url.searchParams)]);
+    const list = auditPage(session.rows[0] ?? []);
+    const value = (name: string): string => url.searchParams.get(name) ?? "";
+    const filtered = ["action", "action_prefix", "actor", "actor_id", "target", "created_from", "created_to"].some((name) => value(name) !== "");
+    // The log is read from the newest entry back: "Older" continues from the last row shown.
+    const turn = (before: number | null, label: string): Safe => {
+      const params = new URLSearchParams(url.searchParams);
+      for (const name of ["ok", "error", "before"]) params.delete(name);
+      if (before !== null) params.set("before", String(before));
+      return html`<a class="btn btn-sm" href="/admin/audit${params.size > 0 ? `?${params.toString()}` : ""}">${label}</a>`;
+    };
+    const older = value("before") === "" && list.next_before === null ? html`` : html`<div class="pager"><span>${value("before") === "" ? "Newest entries" : "Older entries"}</span>
+<div>${value("before") === "" ? "" : turn(null, "Back to the newest")}${list.next_before === null ? "" : turn(list.next_before, "Older")}</div></div>`;
+    const body = card(html`<form method="get" class="filters">
+${field("action", "Action", html`<select id="action" name="action"><option value="">Any action</option>
+${Object.entries(ACTIONS).map(([action, label]) => html`<option value="${action}" ${action === value("action") ? "selected" : ""}>${label}</option>`)}</select>`)}
+${field("actor", "Who starts with", html`<input type="text" id="actor" name="actor" value="${value("actor")}">`)}
+${field("from", "From", html`<input type="date" id="from" name="created_from" value="${value("created_from")}">`)}
+${field("to", "Until", html`<input type="date" id="to" name="created_to" value="${value("created_to")}">`)}
+<button class="btn">Apply filters</button></form>
+${list.items.length === 0
+  ? empty("history", filtered ? "Nothing matches these filters" : "Nothing recorded yet", filtered ? "Change or clear the filters to see more." : "Every change made from now on appears here.",
+      filtered ? html`<a class="btn" href="/admin/audit">Clear filters</a>` : undefined)
+  : html`<div class="table-wrap"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>Action</th><th>On</th><th>Details</th></tr></thead><tbody>
+${list.items.map((entry) => html`<tr><td>${date(entry.at)}</td>
+<td><strong>${entry.actor.name || "(no name)"}</strong><br><span class="muted">${entry.actor.role} · ${entry.actor.via}${entry.actor.ip ? ` · ${entry.actor.ip}` : ""}</span></td>
+<td>${(ACTIONS as Record<string, string>)[entry.action] ?? entry.action}</td>
+<td>${entry.target ? html`${entry.target.type} <strong>${entry.target.name ?? entry.target.id ?? ""}</strong>` : ""}</td>
+<td class="wrap">${auditDetails(entry)}</td></tr>`)}</tbody></table></div>`}
+${older}`, { flush: true });
+    return adminPage(session, url, {
+      title: "Audit log", body, active: "/admin/audit",
+      subtitle: "Every change made to this installation: who, when and what. Entries cannot be edited or removed here.",
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The access link: a reader chooses their password. No sign-in: the link is the credential.
+  // -------------------------------------------------------------------------
+
+  route("GET", "/reader/invite/:token", async (_request, url, params) => {
+    let invite: Awaited<ReturnType<typeof findInvite>>;
+    try {
+      invite = await findInvite(ctx, params.token ?? "");
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      return show({ title: "This link is not valid", subtitle: error.message, body: html`<a class="btn" href="/reader/">Go to sign-in</a>`, status: error.status });
+    }
+    const body = html`<form method="post">
+${field("username", "Username", html`<input type="text" id="username" name="username" value="${invite.username}" autocomplete="username" readonly>`, "You will sign in with this name.")}
+${field("password", "Password", html`<input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required autofocus>`, "At least 8 characters.")}
+${field("confirm", "Repeat the password", html`<input type="password" id="confirm" name="confirm" autocomplete="new-password" minlength="8" required>`)}
+<div class="field"><button class="btn btn-primary btn-block">Create password and sign in</button></div></form>`;
+    return show({ title: "Create your password", subtitle: `This link works once and expires on ${date(invite.expires_at)} UTC.`, body, url });
+  });
+
+  route("POST", "/reader/invite/:token", async (request, _url, params) => {
+    const form = await request.formData();
+    if (text(form, "password") !== text(form, "confirm")) throw new HttpError(400, "The two passwords are not the same.");
+    const { cookie } = await acceptInvite(ctx, request, params.token ?? "", { password: text(form, "password") });
+    return redirect("/reader/home", [cookie]);
+  });
 
   // -------------------------------------------------------------------------
   // Reader
@@ -466,7 +585,7 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
 
   route("POST", "/reader/config", async (request) => {
     const session = await enter(request, "reader");
-    await setReaderProps(ctx, session.user.id, text(await request.formData(), "props"));
+    await setReaderProps(ctx, session.actor, session.user.id, text(await request.formData(), "props"));
     return done("/reader/config", "Preferences saved.");
   });
 

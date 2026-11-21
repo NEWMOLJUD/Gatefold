@@ -6,6 +6,7 @@ import { registerPages } from "./pages.ts";
 // Gatefold: publishes and manages read-only sites.
 //
 //   core.ts      database, authentication and the administrator and reader operations
+//   audit.ts     the audit log: one row for every change, written with the change
 //   view.ts      serving the files of sites/sources/ (permission, props, rendering)
 //   source-config.ts  the source.json of each source: rendered extensions and props
 //   template.ts  template engine

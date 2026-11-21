@@ -54,6 +54,7 @@ const ICONS = {
   alert: "M12 9v4M12 16.5v.5M10.3 3.9L2.6 17.5a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z",
   info: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 7.5v.5",
   book: "M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3zM5 17a3 3 0 0 1 3-3h11",
+  history: "M12 7v5l3 2M4 12a8 8 0 1 0 2.5-5.8M4 4v4h4",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -134,6 +135,7 @@ const NAV: Record<Role, [href: string, label: string, symbol: IconName][]> = {
     ["/admin/list-admins", "Administrators", "shield"],
     ["/admin/config", "Platform props", "sliders"],
     ["/admin/api-keys", "API keys", "key"],
+    ["/admin/audit", "Audit log", "history"],
   ],
   reader: [
     ["/reader/home", "Library", "book"],
