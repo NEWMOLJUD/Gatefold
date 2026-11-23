@@ -323,6 +323,14 @@ export function registerApi(server: Server, ctx: Ctx): void {
     return { ok: true };
   });
 
+  // Replaces all the props of a reader (`{ "props": { ... } }`). The ones they have now are in the answer of
+  // `GET /api/admin/readers/:id`. The reader can still change them: props personalise pages, never control access.
+  route("PUT", "/api/admin/readers/:id/props", async (request, _url, params) => {
+    const { actor } = await enter(request, "admin");
+    await setReaderProps(ctx, actor, params.id ?? "", (await body(request)).props);
+    return { ok: true };
+  });
+
   // A new access link for the reader, replacing the one before it: for a reader who
   // never chose a password, or to let one choose a new password.
   route("POST", "/api/admin/readers/:id/invite", async (request, _url, params) => {

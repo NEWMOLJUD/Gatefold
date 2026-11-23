@@ -1202,7 +1202,7 @@ export const ACCOUNT_ROWS = { account: 0, keys: 1, allowed: 2, sources: 3, invit
 export function accountQueries(role: Role, id: string): Statement[] {
   const { table, column } = TABLE[role];
   const queries: Statement[] = [
-    [`SELECT u.id, u.username, u.created_at, u.suspended_at${role === "reader" ? READER_COLUMNS : ", u.mfa_enabled_at"} FROM ${table} u WHERE u.id = ?`, id],
+    [`SELECT u.id, u.username, u.created_at, u.suspended_at${role === "reader" ? `${READER_COLUMNS}, u.props` : ", u.mfa_enabled_at"} FROM ${table} u WHERE u.id = ?`, id],
     [`SELECT ${KEY_COLUMNS} FROM api_keys WHERE ${column} = ? ORDER BY created_at DESC`, id],
   ];
   if (role === "reader") {
@@ -1221,6 +1221,8 @@ export interface AccountDetail extends Account {
   allowed?: string[];
   /** Readers: the access link that is waiting to be used, if there is one. The link itself is never stored. */
   invite?: { created_at: number; expires_at: number } | null;
+  /** Readers: their own props, which they and an administrator can change. */
+  props?: Record<string, unknown>;
 }
 
 export function oneAccount(rows: Row[][]): AccountDetail {
@@ -1234,6 +1236,7 @@ export function oneAccount(rows: Row[][]): AccountDetail {
     api_keys: (rows[ACCOUNT_ROWS.keys] ?? []).map(toApiKey),
     ...(allowed ? { allowed: allowed.map((permission) => String(permission.source_alias)) } : {}),
     ...(invites ? { invite: invite ? { created_at: Number(invite.created_at), expires_at: Number(invite.expires_at) } : null } : {}),
+    ...(row.props === undefined ? {} : { props: parseObject(row.props) }),
   };
 }
 
@@ -1771,12 +1774,17 @@ export async function setPlatformProps(ctx: Ctx, actor: Actor, value: unknown): 
   ]);
 }
 
+/**
+ * Replaces all the props of a reader. Called by the reader, for their own, and
+ * by an administrator, for any reader: the log says which of the two it was.
+ */
 export async function setReaderProps(ctx: Ctx, actor: Actor, readerId: string, value: unknown): Promise<void> {
   const text = propsText(value);
-  await ctx.db.batch([
+  const results = await ctx.db.batch([
     recordFound(actor, "reader.props.updated", "reader", userFound("reader", readerId), propKeys(text)),
-    ["UPDATE readers SET props = ? WHERE id = ?", text, readerId],
+    ["UPDATE readers SET props = ? WHERE id = ? RETURNING id", text, readerId],
   ]);
+  if ((results.at(-1) ?? []).length === 0) throw new HttpError(404, "User not found.");
 }
 
 // ---------------------------------------------------------------------------

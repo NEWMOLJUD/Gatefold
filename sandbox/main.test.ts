@@ -5,7 +5,7 @@ import { render } from "./template.ts";
 import { ROOT, helpers, secrets } from "./test-helpers.ts";
 
 export default function ({ test, assert }: Tests) {
-  const { json, cookieOf, createAdmin, createReader, uploadSource } = helpers(assert);
+  const { json, cookieOf, createAdmin, createReader, uploadSource, audit } = helpers(assert);
 
   const escaped = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -284,6 +284,46 @@ export default function ({ test, assert }: Tests) {
     assert(reader.includes("<h1>From the reader</h1>"));
     assert(reader.includes("the <strong>dark</strong> theme"));
     assert(reader.includes("2. two"));
+  });
+
+  test("props: an administrator reads and replaces the props of any reader", { secrets }, async (app) => {
+    const admin = await createAdmin(app);
+    await uploadSource(app, admin, { public: true });
+    const leo = await createReader(app, admin);
+    const put = (id: string, props: unknown, headers: Record<string, string> = { cookie: admin }) => app.fetch(`/api/admin/readers/${id}/props`, json("PUT", { props }, headers));
+    const detail = async () => (await (await app.fetch(`/api/admin/readers/${leo.id}`, { headers: { cookie: admin } })).json()) as { props: unknown };
+    assert.equal((await detail()).props, {});
+
+    const chosen = { title: "From the administrator", theme: "dark" };
+    assert.equal((await put(leo.id, chosen)).status, 200);
+    assert.equal((await detail()).props, chosen);
+    // The reader has them at once: in the pages and in their own preferences.
+    assert((await (await app.fetch("/reader/view/example/", { headers: { cookie: leo.cookie } })).text()).includes("<h1>From the administrator</h1>"));
+    assert.equal(await (await app.fetch("/api/reader/props", { headers: { cookie: leo.cookie } })).json(), { props: chosen });
+    // The list of readers does not carry them: they can be large.
+    assert(!(await (await app.fetch("/api/admin/readers", { headers: { cookie: admin } })).text()).includes("From the administrator"));
+
+    // Refused: what is not a JSON object, a reader who does not exist, and whoever is not an administrator.
+    assert.equal((await put(leo.id, [1, 2])).status, 400);
+    assert.equal((await put(leo.id, "{not json")).status, 400);
+    assert.equal((await put("does-not-exist", { a: 1 })).status, 404);
+    assert.equal((await put(leo.id, { a: 1 }, {})).status, 401);
+    assert.equal((await put(leo.id, { a: 1 }, { cookie: leo.cookie })).status, 401);
+    assert.equal((await detail()).props, chosen);
+
+    // The same in the console, on the reader's page.
+    const page = `/admin/edit-reader?reader-id=${leo.id}`;
+    const post = (props: string) => app.fetch(page, { method: "POST", headers: { cookie: admin }, body: new URLSearchParams({ action: "props", props }) });
+    assert((await (await app.fetch(page, { headers: { cookie: admin } })).text()).includes('name="props"'));
+    assert(((await post('{"plan": "gold"}')).headers.get("location") ?? "").startsWith(`${page}&ok=`));
+    assert.equal((await detail()).props, { plan: "gold" });
+    assert(((await post("{this is not json")).headers.get("location") ?? "").startsWith(`${page}&error=`));
+    assert.equal((await detail()).props, { plan: "gold" });
+
+    // The log names the administrator who did it, and the keys, never the values.
+    const rows = await audit(app, admin, "action=reader.props.updated");
+    assert.equal(rows.length, 2);
+    assert.equal([rows[0]!.actor.role, rows[0]!.actor.name, rows[0]!.target?.name, rows[0]!.details], ["admin", "ana", "leo", { keys: ["plan"] }]);
   });
 
   test("files: a folder becomes index.html, what is not a template stays intact, an address that leaves the folder is refused", { secrets }, async (app) => {

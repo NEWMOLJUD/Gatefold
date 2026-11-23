@@ -628,6 +628,11 @@ ${account.invite ? html`<form method="post" data-confirm="Revoke the link? It st
 <p class="muted">Lost phone? Turn it off here and the password alone signs in again. If it is required of every reader, they set it up again at the next sign-in.</p></div>
 <form method="post" data-confirm="Turn off the two-step verification of ${account.username}? Do it only if you are sure the request comes from them.">
 <input type="hidden" name="action" value="reset-two-step"><button class="btn">Turn off</button></form></div>`, { title: "Two-step verification", class: "narrow" });
+      const props = role !== "reader" ? "" : html`<form method="post"><input type="hidden" name="action" value="props">
+${card(field("props", "Props (JSON object)", propsArea(account.props ?? {}),
+        html`Templates read them as <code>{{ props.key }}</code> when ${account.username} is reading. They win over the platform and source props when they share a key. Saving replaces all of them.`),
+        { title: "Props of this reader", description: "The reader sees and can change these too, under Preferences: they personalise pages and never control access.", class: "narrow",
+          footer: html`<button class="btn btn-primary">Save props</button>` })}</form>`;
       const body = html`<form method="post"><input type="hidden" name="action" value="save">
 ${card(html`${field("username", "Username", html`<input type="text" id="username" name="username" value="${account.username}" autocomplete="off" required>`)}
 ${role === "reader"
@@ -636,7 +641,7 @@ ${role === "reader"
       ? html`To change your password, go to <a href="/admin/account">Your account</a>.`
       : "Each administrator changes their own password, under Your account. If it is lost, whoever holds the root password sets a new one at /root/setup."}</p>`}`, { title: "Account", class: "narrow" })}
 ${sources}<div class="narrow actions"><button class="btn btn-primary">Save changes</button></div></form>
-<br>${access}${keys}${twoStepReset}
+<br>${props}${access}${keys}${twoStepReset}
 ${card(html`<div class="split"><div>${account.suspended
         ? html`<strong>This ${noun} is suspended</strong> ${badge("Suspended", "danger")}<p class="muted">They cannot sign in or use their API keys${role === "reader" ? " or an access link" : ""}. Everything they have is kept.</p>`
         : html`<strong>Suspend this ${noun}</strong><p class="muted">Signs them out and keeps them out, without removing anything: reactivating gives it all back.${self ? " This is your own account: you will be signed out." : ""}</p>`}</div>
@@ -678,6 +683,10 @@ ${card(html`<div class="split"><div><strong>Remove this ${noun}</strong>
       if (action === "reset-two-step" && role === "reader") {
         await resetTwoStep(ctx, session.actor, "reader", id);
         return done(editPath(id), "Two-step verification turned off for this reader.");
+      }
+      if (action === "props" && role === "reader") {
+        await setReaderProps(ctx, session.actor, id, text(form, "props"));
+        return done(editPath(id), "Props saved.");
       }
       if (action === "revoke-invite" && role === "reader") {
         await revokeInvite(ctx, session.actor, id);
