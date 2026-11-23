@@ -4,6 +4,8 @@ Notable changes to Gatefold are recorded here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-23
+
 ### Upgrade notes
 
 - **Sources are now uploaded, and `sites/sources/` is no longer read.** After updating, every source keeps its visibility and its permissions but **has no files, and answers "not found", until its folder is uploaded again**: open each one under **Sources** and upload its folder (or use the API, see "Publish from a script" in the README). Then delete `sites/sources/` from the repository. Do this right after publishing the update, when few readers are around.
@@ -71,5 +73,6 @@ First public release.
 - White-label branding from `sites/label/`.
 - Runs on Cloudflare Workers or as a Linux service, with a single SQLite database.
 
-[Unreleased]: https://github.com/newmoljud/moljud-pages/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/newmoljud/moljud-pages/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/newmoljud/moljud-pages/compare/v0.1.0...v0.6.1
 [0.1.0]: https://github.com/newmoljud/moljud-pages/releases/tag/v0.1.0

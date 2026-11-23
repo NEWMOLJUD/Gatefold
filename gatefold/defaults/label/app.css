@@ -127,6 +127,12 @@ td strong a { color: var(--ink); text-decoration: none; }
 td strong a:hover { color: var(--accent-text); text-decoration: underline; }
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
 .pager div { display: flex; gap: 8px; }
+td form.inline { display: inline-block; margin-left: 6px; }
+
+/* ---- Folder upload -------------------------------------------------- */
+progress { display: block; width: 100%; height: 10px; accent-color: var(--accent); }
+.upload-log { margin: 12px 0 0; padding: 10px 14px 10px 30px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--surface-2); font-size: 13px; overflow-wrap: anywhere; }
+.upload-log[hidden] { display: none; }
 
 /* ---- Badges, alerts, empty states ---------------------------------- */
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px; border-radius: var(--radius-small); font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
